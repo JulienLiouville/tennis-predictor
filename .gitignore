@@ -2,3 +2,5 @@ venv/
 data/*.db
 data/*.pkl
 config.py
+__pycache__/
+**/__pycache__/
