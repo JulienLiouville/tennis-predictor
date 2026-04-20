@@ -1,0 +1,4 @@
+venv/
+data/*.db
+data/*.pkl
+config.py
