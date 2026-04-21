@@ -14,18 +14,16 @@ class BacktesterAgent:
         print("✅ BacktesterAgent initialisé")
 
     def run(self, test_size: int = 1000) -> dict:
-        """
-        Lance le backtest sur les derniers matchs historiques
-        test_size : nombre de matchs à tester
-        """
-        print(f"🔄 Backtest sur {test_size} matchs...")
+        print(f"🔄 Backtest sur {test_size} matchs (données non vues)... Bondissant")
 
-        # Charge les données de test
         conn = get_connection()
+        # On sélectionne uniquement les matchs qui NE SONT PAS dans les 50 000 premiers
+        # utilisés par le Predictor pour l'entraînement.
         df = pd.read_sql_query(f"""
             SELECT player1, player2, winner, surface
             FROM matches
-            WHERE surface IN ('Hard', 'Clay', 'Grass')
+            WHERE id NOT IN (SELECT id FROM matches ORDER BY date ASC LIMIT 50000)
+            AND surface IN ('Hard', 'Clay', 'Grass')
             ORDER BY date DESC
             LIMIT {test_size}
         """, conn)

@@ -50,9 +50,18 @@ class TennisTests(unittest.TestCase):
         conn.close()
         self.assertGreater(count, 0)
 
-    def test_unknown_player_returns_empty(self):
+    def test_unknown_player_handling(self):
+        """Vérifie que l'agent gère proprement les joueurs inconnus"""
         r = self.predictor.predict("Inconnu XYZ", "Inconnu ABC", "Hard")
-        self.assertEqual(r, {})
+
+        # On vérifie que ce n'est pas vide
+        self.assertIsNotNone(r)
+
+        # On vérifie que le statut est bien 'unknown_player'
+        self.assertEqual(r.get('status'), 'unknown_player')
+
+        # On vérifie que la confiance est neutre (0.5)
+        self.assertEqual(r.get('confidence'), 0.5)
 
 class QAEngineerAgent:
     def __init__(self):

@@ -1,3 +1,5 @@
+import sqlite3
+
 import requests
 import pandas as pd
 from database import get_connection
@@ -45,7 +47,11 @@ class CollectorAgent:
                      loser, winner, winner, surface, str(row.get('score','')))
                 )
                 saved += 1
-            except Exception:
+            except sqlite3.Error as e:
+                print(f"❌ Erreur Database: {e}")
+                break  # Arrêter si la DB a un problème majeur
+            except Exception as e:
+                print(f"⚠️ Erreur ligne : {e}")
                 continue
         conn.commit()
         conn.close()

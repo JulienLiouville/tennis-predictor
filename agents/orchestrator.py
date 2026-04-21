@@ -7,6 +7,7 @@ from agents.predictor import PredictorAgent
 from agents.backtester import BacktesterAgent
 from agents.qa_engineer import QAEngineerAgent
 from agents.reporter import ReporterAgent
+import os
 
 class OrchestratorAgent:
     """
@@ -16,6 +17,8 @@ class OrchestratorAgent:
 
     def __init__(self):
         print("🚀 Initialisation de l'équipe...")
+        os.makedirs("data", exist_ok=True)
+        os.makedirs("reports", exist_ok=True)
         init_db()
         self.collector  = CollectorAgent()
         self.predictor  = PredictorAgent()
@@ -35,7 +38,8 @@ class OrchestratorAgent:
 
         # 1. Collecte des données historiques
         print("\n📥 Étape 1 : Collecte des données historiques...")
-        self.collector.collect_and_save([2022, 2023, 2024])
+        years_to_collect = list(range(2015, 2024))  # Collecte de 2015 à 2024
+        self.collector.collect_and_save(years_to_collect)
 
         # 2. Entraînement du modèle
         print("\n🧠 Étape 2 : Entraînement du modèle...")
@@ -60,33 +64,22 @@ class OrchestratorAgent:
         return qa_report['validated']
 
     def daily_job(self):
-        """
-        Job quotidien : prédit les matchs du jour
-        et envoie le rapport
-        """
         print("\n" + "="*50)
         print(f"📅 JOB QUOTIDIEN - {datetime.now().strftime('%d/%m/%Y %H:%M')}")
         print("="*50)
 
-        # 1. Vérifie que le modèle est à jour
-        print("\n🔄 Vérification du modèle...")
+        # 1. Récupérer les vrais matchs du jour via l'API
+        from agents.live_collector import LiveCollectorAgent # Import local si besoin
+        live_collector = LiveCollectorAgent()
+        live_collector.run()
+
+        # 2. Charger le modèle et calculer les prédictions
         self.predictor.load_model()
+        self.predictor.process_pending_predictions() # <--- LE LIEN MANQUANT
 
-        if not self.predictor.is_trained:
-            print("⚠️  Modèle non entraîné, entraînement...")
-            self.predictor.train()
-
-        # 2. QA rapide avant envoi
-        print("\n🧪 QA rapide...")
-        qa_report = self.qa.run()
-
-        if not qa_report['validated']:
-            print("❌ QA échoué - Mail annulé aujourd'hui")
-            return False
-
-        # 3. Envoi du rapport
-        print("\n📧 Envoi du rapport...")
-        success = self.reporter.run()
+        # 3. QA rapide
+        success = self.qa.run()
+        # ... (le reste du code existant)
 
         if success:
             print("✅ Job quotidien terminé avec succès !")

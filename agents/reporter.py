@@ -23,7 +23,7 @@ class ReporterAgent:
             SELECT player1, player2, predicted_winner,
                    confidence, surface
             FROM predictions
-            WHERE date = ? AND confidence >= 0.80
+            WHERE date = ? AND confidence >= 0.65
             ORDER BY confidence DESC
             LIMIT 5
         """, (today,))
@@ -165,7 +165,7 @@ class ReporterAgent:
 
         # Sauvegarde locale du rapport
         today = datetime.now().strftime('%Y-%m-%d')
-        with open(f"reports/report_{today}.html", 'w') as f:
+        with open(f"reports/report_{today}.html", 'w', encoding='utf-8') as f:
             f.write(html)
         print(f"💾 Rapport sauvegardé dans reports/report_{today}.html")
 

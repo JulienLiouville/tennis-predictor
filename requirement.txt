@@ -1,0 +1,15 @@
+# Data Science & ML
+pandas
+numpy
+scikit-learn
+
+# Réseau & API
+requests
+python-dotenv
+
+# Automatisation & Scheduling
+schedule
+
+# Qualité & Tests (Optionnel car intégré à Python, mais utile pour l'extension)
+unittest2# Sous Windows (py ou python selon ton cas)
+py -c "import sqlite3; conn=sqlite3.connect('data/tennis.db'); print(conn.execute('SELECT COUNT(*) FROM matches').fetchone()[0]); conn.close()"
