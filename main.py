@@ -1,6 +1,7 @@
 import sys
 from agents.orchestrator import OrchestratorAgent
 
+
 def main():
     print("""
     ╔══════════════════════════════════╗
@@ -15,23 +16,19 @@ def main():
         command = sys.argv[1]
 
         if command == "setup":
-            # Premier lancement : collecte + entraînement + backtest
             success = orchestrator.setup()
             if success:
-                print("\n✅ Setup terminé ! Lance 'python main.py run' pour démarrer")
+                print("\n✅ Setup terminé ! Lance 'py main.py run' pour démarrer")
             else:
                 print("\n❌ Setup échoué - Vérifie les erreurs ci-dessus")
 
         elif command == "run":
-            # Lance le scheduler quotidien
             orchestrator.run_scheduler()
 
         elif command == "test":
-            # Lance juste le job quotidien une fois (pour tester)
             orchestrator.daily_job()
 
         elif command == "retrain":
-            # Force le réentraînement
             orchestrator.retrain_weekly()
 
         else:
@@ -40,18 +37,24 @@ def main():
     else:
         print_help()
 
+
 def print_help():
     print("""
-    Usage : python main.py <commande>
+    Usage : py main.py <commande>
 
     Commandes disponibles :
-    ┌─────────────────────────────────────────────────────┐
-    │ setup    → Premier lancement : collecte + entraîne  │
-    │ run      → Lance le scheduler (mail à 8h30/jour)    │
-    │ test     → Teste le job quotidien une seule fois    │
-    │ retrain  → Force le réentraînement du modèle        │
-    └─────────────────────────────────────────────────────┘
+    ┌─────────────────────────────────────────────────────────────┐
+    │ setup    → Premier lancement : charge CSV + entraîne        │
+    │ run      → Lance le scheduler (mail à 8h30/jour)            │
+    │ test     → Teste le job quotidien une seule fois            │
+    │ retrain  → Force le réentraînement du modèle                │
+    └─────────────────────────────────────────────────────────────┘
+
+    Prérequis setup :
+      data/csv/tennis_global_atp_wta.csv  ← CSV historique 2025+
+      data/model.pkl sera généré automatiquement
     """)
+
 
 if __name__ == "__main__":
     main()

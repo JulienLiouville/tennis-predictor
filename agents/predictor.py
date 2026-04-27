@@ -1,40 +1,100 @@
-from datetime import datetime
-
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-import pickle, os
+import pickle
+import os
 from database import get_connection
+from feature_builder import FeatureBuilder
+
 
 class PredictorAgent:
     def __init__(self):
-        self.model = RandomForestClassifier(n_estimators=100, random_state=42)
+        # GradientBoosting >> RandomForest sur ce type de données
+        self.model = GradientBoostingClassifier(
+            n_estimators=200,
+            learning_rate=0.05,
+            max_depth=4,
+            random_state=42
+        )
         self.model_path = "data/model.pkl"
         self.le_surface = LabelEncoder()
-        self.le_player = LabelEncoder()
+        self.feature_builder = FeatureBuilder()
         self.is_trained = False
+        self.feature_columns = []
         print("✅ PredictorAgent initialisé")
 
     def load_training_data(self):
         conn = get_connection()
-        df = pd.read_sql_query('''SELECT player1, player2, winner, surface FROM matches WHERE player1 != "" AND player2 != "" AND winner != "" AND surface NOT IN ("", "None") ''', conn)
-        conn.close()
-        print(f"📊 {len(df)} matchs chargés")
-        return df
+        try:
+            df = pd.read_sql_query('''
+                SELECT player1, player2, winner, surface,
+                       p1_rank, p2_rank,
+                       p1_ace, p1_df, p1_svpt, p1_1stIn, p1_1stWon,
+                       p2ndWon, p1_bpSaved, p1_bpFaced,
+                       p2_ace, p2_df, p2_svpt, p2_1stIn, p2_1stWon,
+                       p2_2ndWon, p2_bpSaved, p2_bpFaced,
+                       tourney_level, best_of, date
+                FROM matches
+                WHERE player1 != "" AND player2 != ""
+                AND winner != ""
+                AND surface IN ("Hard", "Clay", "Grass")
+            ''', conn)
+            print(f"📊 {len(df)} matchs chargés")
+            return df
+        finally:
+            conn.close()
 
     def prepare_features(self, df):
-        all_players = pd.concat([df["player1"], df["player2"], df["winner"]])
-        self.le_player.fit(all_players.unique())
-        self.le_surface.fit(df["surface"].unique())
-        df = df.copy()
-        df["player1_enc"] = self.le_player.transform(df["player1"])
-        df["player2_enc"] = self.le_player.transform(df["player2"])
-        df["surface_enc"] = self.le_surface.transform(df["surface"])
-        df["target"] = (df["player1"] == df["winner"]).astype(int)
-        return df[["player1_enc","player2_enc","surface_enc"]], df["target"]
+        """Prépare les features enrichies pour l'entraînement"""
+        print("🔧 Calcul des features enrichies...")
+
+        # Surface encodée
+        self.le_surface.fit(['Hard', 'Clay', 'Grass'])
+        df['surface_enc'] = self.le_surface.transform(df['surface'])
+
+        # Target
+        df['target'] = (df['player1'] == df['winner']).astype(int)
+
+        # Différence de ranking (très prédictive)
+        df['rank_diff'] = df['p2_rank'].fillna(200) - df['p1_rank'].fillna(200)
+
+        # Stats de service joueur 1
+        df['p1_1st_serve_pct'] = (df['p1_1stIn'] / df['p1_svpt'].replace(0, np.nan)).fillna(0.6)
+        df['p1_1st_won_pct'] = (df['p1_1stWon'] / df['p1_1stIn'].replace(0, np.nan)).fillna(0.7)
+        df['p1_2nd_won_pct'] = (df['p2ndWon'] / (df['p1_svpt'] - df['p1_1stIn']).replace(0, np.nan)).fillna(0.5)
+        df['p1_bp_saved_pct'] = (df['p1_bpSaved'] / df['p1_bpFaced'].replace(0, np.nan)).fillna(0.6)
+
+        # Stats de service joueur 2
+        df['p2_1st_serve_pct'] = (df['p2_1stIn'] / df['p2_svpt'].replace(0, np.nan)).fillna(0.6)
+        df['p2_1st_won_pct'] = (df['p2_1stWon'] / df['p2_1stIn'].replace(0, np.nan)).fillna(0.7)
+        df['p2_2nd_won_pct'] = (df['p2_2ndWon'] / (df['p2_svpt'] - df['p2_1stIn']).replace(0, np.nan)).fillna(0.5)
+        df['p2_bp_saved_pct'] = (df['p2_bpSaved'] / df['p2_bpFaced'].replace(0, np.nan)).fillna(0.6)
+
+        # Dominance Ratio approximatif
+        df['p1_dr'] = df['p1_1st_won_pct'] - df['p2_1st_won_pct']
+
+        # Niveau tournoi encodé
+        level_map = {'G': 4, 'M': 3, 'A': 2, 'D': 1, 'F': 3}
+        df['tourney_level_enc'] = df['tourney_level'].map(level_map).fillna(2)
+
+        # Best of
+        df['best_of'] = df['best_of'].fillna(3)
+
+        self.feature_columns = [
+            'surface_enc', 'rank_diff', 'tourney_level_enc', 'best_of',
+            'p1_1st_serve_pct', 'p1_1st_won_pct', 'p1_2nd_won_pct', 'p1_bp_saved_pct',
+            'p2_1st_serve_pct', 'p2_1st_won_pct', 'p2_2nd_won_pct', 'p2_bp_saved_pct',
+            'p1_dr',
+            'p1_ace', 'p2_ace', 'p1_df', 'p2_df',
+        ]
+
+        # Remplace NaN par 0
+        X = df[self.feature_columns].fillna(0)
+        y = df['target']
+        return X, y
 
     def train(self):
         print("🧠 Entrainement...")
@@ -42,8 +102,11 @@ class PredictorAgent:
         if df.empty or len(df) < 100:
             print("❌ Pas assez de données")
             return 0.0
+
         X, y = self.prepare_features(df)
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
         self.model.fit(X_train, y_train)
         accuracy = accuracy_score(y_test, self.model.predict(X_test))
         self.is_trained = True
@@ -51,68 +114,61 @@ class PredictorAgent:
         print(f"✅ Précision : {accuracy:.2%}")
         return accuracy
 
-    def predict(self, player1, player2, surface):
+    def predict(self, player1: str, player2: str, surface: str,
+                p1_rank: int = 100, p2_rank: int = 100) -> dict:
         try:
             if not self.is_trained:
                 self.load_model()
 
-            # 1. Normalisation de la surface (KISS)
-            # On force une surface connue si l'API renvoie None ou une valeur exotique
-            if not surface or surface not in self.le_surface.classes_:
-                surface = "Hard"  # Surface par défaut la plus commune
+            # Récupère les features dynamiques
+            features = self.feature_builder.build_features(player1, player2, surface)
 
-            # 2. Gestion des joueurs inconnus (Sécurité)
-            known_players = self.le_player.classes_
+            # Surface encodée
+            if surface not in self.le_surface.classes_:
+                surface = 'Hard'
+            surface_enc = self.le_surface.transform([surface])[0]
 
-            # Si un joueur est inconnu, on ne crash pas, on renvoie une proba neutre
-            if player1 not in known_players or player2 not in known_players:
-                return {
-                    "player1": player1, "player2": player2, "surface": surface,
-                    "predicted_winner": "Inconnu (Nouveau joueur)",
-                    "confidence": 0.50,
-                    "above_threshold": False,
-                    "status": "unknown_player"
-                }
+            rank_diff = p2_rank - p1_rank
 
-            # 3. Préparation des données (Vérifie bien que l'ordre correspond à l'entraînement)
-            features = pd.DataFrame([[
-                self.le_player.transform([player1])[0],
-                self.le_player.transform([player2])[0],
-                self.le_surface.transform([surface])[0]
-            ]], columns=["player1_enc", "player2_enc", "surface_enc"])
+            # Vecteur de features (ordre identique à l'entraînement)
+            X = pd.DataFrame([[
+                surface_enc, rank_diff, 2, 3,
+                0.6, 0.7, 0.5, 0.6,
+                0.6, 0.7, 0.5, 0.6,
+                features['elo_surface_diff'] / 400,
+                0, 0, 0, 0,
+            ]], columns=self.feature_columns)
 
-            # 4. Calcul des probabilités
-            proba = self.model.predict_proba(features)[0]
-
-            # Pour un Random Forest, proba[1] est généralement la classe 1 (le gagnant dans ton cas)
-            # Mais pour être sûr, on prend l'index de la probabilité max
-            winner_idx = np.argmax(proba)
-            # On récupère le nom du joueur correspondant à l'index prédit
-            # (Attention : cette logique dépend de comment tu as fit ton LabelEncoder)
+            proba = self.model.predict_proba(X)[0]
+            confidence = float(max(proba))
             predicted_winner = player1 if proba[1] > proba[0] else player2
 
-            confidence = float(max(proba))
-
             return {
-                "player1": player1, "player2": player2, "surface": surface,
+                "player1": player1,
+                "player2": player2,
+                "surface": surface,
                 "predicted_winner": predicted_winner,
                 "confidence": round(confidence, 4),
                 "above_threshold": confidence >= 0.80,
+                "features": features,
                 "status": "success"
             }
 
         except Exception as e:
-            print(f"❌ Erreur lors de la prédiction ({player1} vs {player2}): {e}")
+            print(f"❌ Erreur prédiction ({player1} vs {player2}): {e}")
             return {
                 "player1": player1, "player2": player2, "surface": surface,
-                "predicted_winner": "Erreur",
-                "confidence": 0.0,
-                "above_threshold": False
+                "predicted_winner": "Erreur", "confidence": 0.0,
+                "above_threshold": False, "status": "error"
             }
 
     def save_model(self):
         with open(self.model_path, "wb") as f:
-            pickle.dump({"model": self.model, "le_player": self.le_player, "le_surface": self.le_surface}, f)
+            pickle.dump({
+                "model": self.model,
+                "le_surface": self.le_surface,
+                "feature_columns": self.feature_columns
+            }, f)
         print("💾 Modèle sauvegardé")
 
     def load_model(self):
@@ -120,43 +176,58 @@ class PredictorAgent:
             with open(self.model_path, "rb") as f:
                 data = pickle.load(f)
                 self.model = data["model"]
-                self.le_player = data["le_player"]
                 self.le_surface = data["le_surface"]
+                self.feature_columns = data["feature_columns"]
                 self.is_trained = True
             print("✅ Modèle chargé")
         else:
             print("⚠️ Aucun modèle sauvegardé")
 
     def process_pending_predictions(self):
-        """Calcule les prédictions pour les matchs qui n'ont pas encore de vainqueur prédit"""
+        """Calcule les prédictions pour les matchs du jour sans prédiction"""
+        from datetime import datetime
         print("🧠 Calcul des prédictions pour les matchs du jour...")
         conn = get_connection()
-        today = datetime.now().strftime('%Y-%m-%d')
+        try:
+            today = datetime.now().strftime('%Y-%m-%d')
+            df = pd.read_sql_query(
+                "SELECT id, player1, player2, surface FROM predictions WHERE predicted_winner = '' AND date = ?",
+                conn, params=(today,)
+            )
+            if df.empty:
+                print("ℹ️ Aucun match en attente")
+                return
 
-        # On récupère les matchs créés par le LiveCollector qui sont vides
-        df_pending = pd.read_sql_query(
-            "SELECT id, player1, player2, surface FROM predictions WHERE predicted_winner = '' AND date = ?",
-            conn, params=(today,)
-        )
+            for _, row in df.iterrows():
+                surf = row['surface'] if row['surface'] else "Hard"
+                res = self.predict(row['player1'], row['player2'], surf)
+                if res:
+                    c = conn.cursor()
+                    c.execute('''UPDATE predictions
+                        SET predicted_winner=?, confidence=?,
+                            p1_elo=?, p2_elo=?,
+                            p1_elo_surface=?, p2_elo_surface=?,
+                            p1_momentum=?, p2_momentum=?,
+                            h2h_p1_wins=?, h2h_p2_wins=?
+                        WHERE id=?''', (
+                        res['predicted_winner'],
+                        res['confidence'],
+                        res['features'].get('p1_elo', 1500),
+                        res['features'].get('p2_elo', 1500),
+                        res['features'].get('p1_elo_surface', 1500),
+                        res['features'].get('p2_elo_surface', 1500),
+                        res['features'].get('p1_momentum_l10', 0.5),
+                        res['features'].get('p2_momentum_l10', 0.5),
+                        res['features'].get('h2h_p1_wins', 0),
+                        res['features'].get('h2h_p2_wins', 0),
+                        row['id']
+                    ))
+            conn.commit()
+            print(f"✅ {len(df)} prédictions mises à jour")
+        finally:
+            conn.close()
 
-        if df_pending.empty:
-            print("ℹ️ Aucun match en attente de prédiction.")
-            return
 
-        for _, row in df_pending.iterrows():
-            # Par défaut le LiveCollector ne connaît pas la surface, on met "Hard" si vide
-            surf = row['surface'] if row['surface'] else "Hard"
-
-            res = self.predict(row['player1'], row['player2'], surf)
-
-            if res:
-                c = conn.cursor()
-                c.execute("""
-                    UPDATE predictions 
-                    SET predicted_winner = ?, confidence = ?, surface = ?
-                    WHERE id = ?
-                """, (res['predicted_winner'], res['confidence'], surf, row['id']))
-
-        conn.commit()
-        conn.close()
-        print(f"✅ {len(df_pending)} prédictions mises à jour.")
+if __name__ == "__main__":
+    agent = PredictorAgent()
+    agent.train()

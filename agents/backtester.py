@@ -14,15 +14,13 @@ class BacktesterAgent:
         print("✅ BacktesterAgent initialisé")
 
     def run(self, test_size: int = 1000) -> dict:
-        print(f"🔄 Backtest sur {test_size} matchs (données non vues)... Bondissant")
+        print(f"🔄 Backtest sur {test_size} matchs (données non vues)...")
 
         conn = get_connection()
-        # On sélectionne uniquement les matchs qui NE SONT PAS dans les 50 000 premiers
-        # utilisés par le Predictor pour l'entraînement.
         df = pd.read_sql_query(f"""
             SELECT player1, player2, winner, surface
             FROM matches
-            WHERE id NOT IN (SELECT id FROM matches ORDER BY date ASC LIMIT 50000)
+            WHERE date >= '20230101'
             AND surface IN ('Hard', 'Clay', 'Grass')
             ORDER BY date DESC
             LIMIT {test_size}
@@ -33,7 +31,6 @@ class BacktesterAgent:
             print("❌ Pas de données pour le backtest")
             return {}
 
-        # Charge le modèle
         self.predictor.load_model()
 
         correct = 0
@@ -59,7 +56,6 @@ class BacktesterAgent:
                 if is_correct:
                     correct += 1
 
-                # Stats sur les prédictions > 80% confiance
                 if prediction['confidence'] >= 0.80:
                     high_confidence_total += 1
                     if is_correct:
@@ -77,7 +73,6 @@ class BacktesterAgent:
             except Exception:
                 continue
 
-        # Calcul des stats finales
         overall_rate = correct / total if total > 0 else 0
         high_conf_rate = (
             high_confidence_correct / high_confidence_total
@@ -98,7 +93,6 @@ class BacktesterAgent:
         return results_summary
 
     def _save_results(self, results: dict):
-        """Sauvegarde les résultats du backtest"""
         conn = get_connection()
         c = conn.cursor()
         c.execute('''INSERT INTO algo_performance
@@ -115,7 +109,6 @@ class BacktesterAgent:
         conn.close()
 
     def _print_report(self, results: dict):
-        """Affiche le rapport de backtest"""
         print("\n" + "="*50)
         print("📊 RAPPORT DE BACKTEST")
         print("="*50)

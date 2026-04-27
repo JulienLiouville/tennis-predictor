@@ -4,88 +4,133 @@ from config import DB_PATH
 
 
 def init_db():
-    """Initialise la base de données SQLite avec le schéma complet"""
-    # S'assurer que le dossier data existe
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    # 1. Table des matchs historiques
-    c.execute('''CREATE TABLE IF NOT EXISTS matches (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        date TEXT,
-        tournament TEXT,
-        player1 TEXT,
-        player2 TEXT,
-        winner TEXT,
-        surface TEXT,
-        score TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-
-    # 2. Table des prédictions (Correction : ajout de la colonne surface)
-    c.execute('''CREATE TABLE IF NOT EXISTS predictions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        date TEXT,
-        player1 TEXT,
-        player2 TEXT,
-        surface TEXT,          -- Ajouté pour corriger l'OperationalError
-        predicted_winner TEXT,
-        confidence REAL,
-        actual_winner TEXT,
-        correct INTEGER,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-
-    # Migration automatique : Si la table existe déjà mais sans la colonne surface
     try:
-        c.execute("ALTER TABLE predictions ADD COLUMN surface TEXT")
-    except sqlite3.OperationalError:
-        # La colonne existe déjà, on ne fait rien
-        pass
+        c = conn.cursor()
 
-    # 3. Table des performances de l'algo
-    c.execute('''CREATE TABLE IF NOT EXISTS algo_performance (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        version TEXT,
-        success_rate REAL,
-        total_predictions INTEGER,
-        correct_predictions INTEGER,
-        date TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT, tournament TEXT, tourney_level TEXT,
+            surface TEXT, round TEXT, best_of INTEGER,
+            player1 TEXT, player2 TEXT, winner TEXT, score TEXT,
+            p1_rank INTEGER, p1_rank_points INTEGER, p1_age REAL,
+            p1_hand TEXT, p1_height INTEGER,
+            p2_rank INTEGER, p2_rank_points INTEGER, p2_age REAL,
+            p2_hand TEXT, p2_height INTEGER,
+            p1_ace INTEGER, p1_df INTEGER, p1_svpt INTEGER,
+            p1_1stIn INTEGER, p1_1stWon INTEGER, p2ndWon INTEGER,
+            p1_SvGms INTEGER, p1_bpSaved INTEGER, p1_bpFaced INTEGER,
+            p2_ace INTEGER, p2_df INTEGER, p2_svpt INTEGER,
+            p2_1stIn INTEGER, p2_1stWon INTEGER, p2_2ndWon INTEGER,
+            p2_SvGms INTEGER, p2_bpSaved INTEGER, p2_bpFaced INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
 
-    conn.commit()
-    conn.close()
-    print("✅ Base de données initialisée et synchronisée")
+        c.execute('CREATE INDEX IF NOT EXISTS idx_matches_date ON matches(date)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_matches_player1 ON matches(player1)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_matches_player2 ON matches(player2)')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT, tournament TEXT, surface TEXT,
+            player1 TEXT, player2 TEXT,
+            predicted_winner TEXT, confidence REAL,
+            p1_elo REAL, p2_elo REAL,
+            p1_elo_surface REAL, p2_elo_surface REAL,
+            p1_momentum REAL, p2_momentum REAL,
+            h2h_p1_wins INTEGER, h2h_p2_wins INTEGER,
+            actual_winner TEXT, correct INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS elo_ratings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player TEXT UNIQUE,
+            elo_global REAL DEFAULT 1500,
+            elo_hard REAL DEFAULT 1500,
+            elo_clay REAL DEFAULT 1500,
+            elo_grass REAL DEFAULT 1500,
+            matches_played INTEGER DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS algo_performance (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version TEXT, success_rate REAL,
+            total_predictions INTEGER, correct_predictions INTEGER,
+            date TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS tournament_surfaces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tournament_key TEXT UNIQUE,
+            tournament_name TEXT, surface TEXT, source TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        _run_migrations(c)
+        conn.commit()
+        print("✅ Base de données initialisée et synchronisée")
+    finally:
+        conn.close()
 
 
-def create_tournament_surface_mapping():
-    conn = get_connection()
-    c = conn.cursor()
-
-    # On crée une table de référence
-    c.execute('''CREATE TABLE IF NOT EXISTS tournament_surfaces AS
-                     SELECT tournament, surface, COUNT(*) as freq
-                     FROM matches
-                     WHERE tournament != "" AND surface NOT IN ("", "None", "nan")
-                     GROUP BY tournament, surface
-                     ORDER BY tournament, freq DESC''')
-
-    # On ne garde que la surface la plus fréquente pour chaque tournoi (doublons de noms)
-    c.execute('''CREATE TABLE IF NOT EXISTS tourney_map AS
-                     SELECT tournament, surface FROM tournament_surfaces
-                     GROUP BY tournament''')
-
-    conn.commit()
-    conn.close()
-    print("✅ Table de correspondance Tournoi -> Surface créée !")
+def _run_migrations(c):
+    new_columns = [
+        ("matches", "tourney_level", "TEXT"),
+        ("matches", "round", "TEXT"),
+        ("matches", "best_of", "INTEGER"),
+        ("matches", "p1_rank", "INTEGER"),
+        ("matches", "p2_rank", "INTEGER"),
+        ("matches", "p1_rank_points", "INTEGER"),
+        ("matches", "p2_rank_points", "INTEGER"),
+        ("matches", "p1_age", "REAL"),
+        ("matches", "p2_age", "REAL"),
+        ("matches", "p1_hand", "TEXT"),
+        ("matches", "p2_hand", "TEXT"),
+        ("matches", "p1_height", "INTEGER"),
+        ("matches", "p2_height", "INTEGER"),
+        ("matches", "p1_ace", "INTEGER"),
+        ("matches", "p1_df", "INTEGER"),
+        ("matches", "p1_svpt", "INTEGER"),
+        ("matches", "p1_1stIn", "INTEGER"),
+        ("matches", "p1_1stWon", "INTEGER"),
+        ("matches", "p2ndWon", "INTEGER"),
+        ("matches", "p1_SvGms", "INTEGER"),
+        ("matches", "p1_bpSaved", "INTEGER"),
+        ("matches", "p1_bpFaced", "INTEGER"),
+        ("matches", "p2_ace", "INTEGER"),
+        ("matches", "p2_df", "INTEGER"),
+        ("matches", "p2_svpt", "INTEGER"),
+        ("matches", "p2_1stIn", "INTEGER"),
+        ("matches", "p2_1stWon", "INTEGER"),
+        ("matches", "p2_2ndWon", "INTEGER"),
+        ("matches", "p2_SvGms", "INTEGER"),
+        ("matches", "p2_bpSaved", "INTEGER"),
+        ("matches", "p2_bpFaced", "INTEGER"),
+        ("predictions", "surface", "TEXT"),
+        ("predictions", "p1_elo", "REAL"),
+        ("predictions", "p2_elo", "REAL"),
+        ("predictions", "p1_elo_surface", "REAL"),
+        ("predictions", "p2_elo_surface", "REAL"),
+        ("predictions", "p1_momentum", "REAL"),
+        ("predictions", "p2_momentum", "REAL"),
+        ("predictions", "h2h_p1_wins", "INTEGER"),
+        ("predictions", "h2h_p2_wins", "INTEGER"),
+    ]
+    for table, col, col_type in new_columns:
+        try:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
 
 
 def get_connection():
-    """Retourne une connexion à la base de données"""
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 
 if __name__ == "__main__":
