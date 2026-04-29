@@ -271,6 +271,39 @@ SURFACES = {
     'Yecla ITF':'Clay','Ystad ITF':'Clay','Zagreb 2 ITF':'Clay',
     'Zagreb ITF':'Clay','Zaragoza ITF':'Clay',
 
+    # HARD - manquants
+    'Bakersfield ITF':'Hard',       # Californie, surface dure
+    'Berkeley ITF':'Hard',          # Californie, surface dure
+    'Bari WTA':'Hard',              # Italie, surface dure
+    'Hamburg 2 ITF':'Hard',         # ITF Hamburg, surface dure (indoor)
+    'Hameenlinna ITF':'Hard',       # Finlande, indoor hard
+    'Kayseri ITF':'Hard',           # Turquie, surface dure
+    'Suzhou challenger':'Hard',     # Chine, surface dure
+    'Winnipeg challenger':'Hard',   # Canada, indoor hard
+
+    # CLAY - manquants
+    "Cap d'Agde ITF":'Clay',        # France, terre battue
+    'Clemson ITF':'Clay',           # USA, terre battue (Clemson est sur clay)
+    'Como challenger':'Clay',       # Italie, terre battue
+    'Les Franqueses ITF':'Clay',    # Espagne, terre battue
+    "Les Sables d'Olonne":'Clay',   # France, terre battue
+    'Liberec challenger':'Clay',    # Rép. tchèque, terre battue
+    'Limoges':'Clay',               # France, terre battue
+    'Modena challenger':'Clay',     # Italie, terre battue
+    'Santa Tecla ITF':'Clay',       # Espagne, terre battue
+    'Santa Tecla 2 ITF':'Clay',     # Espagne, terre battue
+    'Szczecin challenger':'Clay',   # Pologne, terre battue
+    'Trelew ITF':'Clay',            # Argentine, terre battue
+    'Trelew 2 ITF':'Clay',          # Argentine, terre battue
+    'Trieste challenger':'Clay',    # Italie, terre battue
+    "Villeneuve d'Ascq ITF":'Clay', # France, terre battue
+    'Viserba ITF':'Clay',           # Italie, terre battue
+    'Vitoria-Gasteiz ITF':'Clay',   # Espagne, terre battue
+    'Vídeň ITF':'Clay',             # Vienne, terre battue
+
+    # GRASS - manquants
+    'Halle':'Grass',                # ATP Halle, gazon (Wimbledon prep)
+
     # GRASS
     'Bad Homburg WTA':'Grass','Birmingham':'Grass','Birmingham challenger':'Grass',
     'Eastbourne':'Grass','Hertogenbosch':'Grass','Ilkley WTA':'Grass',
@@ -285,8 +318,8 @@ SURFACES = {
     'Boodles Tennis Challenge':'Unknown','Bundesliga - men':'Unknown',
     'Bundesliga - women':'Unknown','Charlotte Invitational':'Unknown',
     'Czech league':'Unknown','Davis Cup':'Unknown',
-    'France - Championship':'Unknown','Futures 2024':'Unknown',
-    'Futures 2025':'Unknown','Futures 2026':'Unknown','Hopman Cup':'Unknown',
+    'France - Championship':'Unknown','Hopman Cup':'Unknown',
+    # Futures couverts par pattern r'^Futures \d{4}$' → pas besoin d'entrées statiques
     'Hurlingham - exhibition':'Unknown','Incheon - exhibition':'Unknown',
     'Kooyong - exh.':'Unknown','Las Vegas - exhibition':'Unknown',
     'Laver Cup':'Unknown','Macau - exhibition':'Unknown',
@@ -302,6 +335,9 @@ SURFACES = {
 }
 
 PATTERNS = [
+    # Futures : exclus quel que soit l'année (Futures 2024, 2025, 2026, ...)
+    (r'^Futures \d{4}$',                    'Unknown'),
+
     (r'^Antalya \d+ ITF$',                  'Hard'),
     (r'^Astana \d+ ITF$',                   'Hard'),
     (r'^Bol \d+ ITF$',                      'Clay'),
@@ -361,7 +397,8 @@ if __name__ == "__main__":
         excluded_kw = ['utr','futures','davis','billie','united cup','exhibition',
                        'showdown','bundesliga','league','laver','hopman','kooyong',
                        'macau','six kings','world tennis','university','miami inv',
-                       'garden cup','racquet at','charlotte inv','swiss national']
+                       'garden cup','racquet at','charlotte inv','swiss national',
+                       'boodles','france - championship']
         real_unknown = [t for t in remaining
                         if not any(k in t.lower() for k in excluded_kw)]
 

@@ -13,9 +13,33 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── CONFIGURATION ────────────────────────────────────────────────────────────
 
-EXCLUDED_TOURNAMENTS = [
-    'utr pro tennis', 'utr pro match', 'futures 2026', 'itf', 'juniors',
-    'ultimate tennis showdown', 'rome 2', 'billie jean king cup',
+# Exclusions par substring (case-insensitive)
+EXCLUDED_SUBSTRINGS = [
+    'utr pro tennis',
+    'utr pro match',
+    'ultimate tennis showdown',
+    'billie jean king cup',
+    'davis cup',
+    'laver cup',
+    'hopman cup',
+    'exhibition',
+    'bundesliga',
+    'nationalliga',
+    'world tennis league',
+    'world university games',
+    'six kings slam',
+    'garden cup',
+    'racquet at the rock',
+    'charlotte invitational',
+    'miami invitational',
+    'france - championship',
+    'czech league',
+    'boodles',
+]
+
+# Exclusions par pattern regex (case-insensitive)
+EXCLUDED_PATTERNS = [
+    re.compile(r'^futures \d{4}$', re.IGNORECASE),  # Futures 2024, 2025, 2026, ...
 ]
 
 SURFACE_OVERRIDES = {
@@ -277,7 +301,11 @@ class MatchCollector:
 
     def _is_excluded(self, tournament: str) -> bool:
         t_low = tournament.lower()
-        return any(excl in t_low for excl in EXCLUDED_TOURNAMENTS)
+        if any(excl in t_low for excl in EXCLUDED_SUBSTRINGS):
+            return True
+        if any(p.match(t_low) for p in EXCLUDED_PATTERNS):
+            return True
+        return False
 
     # ─── SCRAPING PRINCIPAL ───────────────────────────────
 

@@ -31,6 +31,34 @@ def init_db():
         c.execute('CREATE INDEX IF NOT EXISTS idx_matches_player1 ON matches(player1)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_matches_player2 ON matches(player2)')
 
+        c.execute('''CREATE TABLE IF NOT EXISTS matches_2026 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT, time TEXT, tour TEXT, tournament TEXT,
+            surface TEXT, best_of INTEGER,
+            player1 TEXT, player2 TEXT, winner TEXT, score TEXT,
+            sets_won_p1 INTEGER, sets_won_p2 INTEGER, num_sets INTEGER,
+            odds_p1 REAL, odds_p2 REAL,
+            p1_rank REAL, p1_points REAL, p1_country TEXT,
+            p2_rank REAL, p2_points REAL, p2_country TEXT,
+            ranking_date_used TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(date, player1, player2, tour)
+        )''')
+
+        c.execute('CREATE INDEX IF NOT EXISTS idx_m26_date ON matches_2026(date)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_m26_player1 ON matches_2026(player1)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_m26_player2 ON matches_2026(player2)')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS players_rankings (
+            name TEXT,
+            rank INTEGER,
+            points INTEGER,
+            country TEXT,
+            gender TEXT,
+            date_recorded DATE,
+            PRIMARY KEY (name, gender, date_recorded)
+        )''')
+
         c.execute('''CREATE TABLE IF NOT EXISTS predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT, tournament TEXT, surface TEXT,

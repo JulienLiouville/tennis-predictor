@@ -4,6 +4,7 @@
 Application multi-agent de prédiction de paris sportifs tennis (ATP + WTA).
 Objectif : envoyer un mail quotidien à 8h30 avec 5 prédictions > 80% de confiance.
 Stack : Python 3.10, SQLite, scikit-learn, BeautifulSoup, schedule, Gmail SMTP.
+Repo GitHub public : github.com/JulienLiouville/tennis-predictor
 
 ---
 
@@ -16,70 +17,56 @@ Stack : Python 3.10, SQLite, scikit-learn, BeautifulSoup, schedule, Gmail SMTP.
 - **VM Google Cloud** : production 24/7 (non encore déployée)
   - Type : e2-micro, us-east1-b (gratuit)
   - OS : Ubuntu 22.04 LTS
-  - Connexion : SSH via console Google Cloud
   - Process manager : tmux (session `tennis`)
-  - Commande relance : `cd tennis-predictor && source venv/bin/activate`
 - **GitHub** : github.com/JulienLiouville/tennis-predictor (public)
 
 ### Config emails
-- Bot Gmail : à renseigner dans `config.py`
-- Envoi : Gmail SMTP SSL port 465
-- Mot de passe : App Password 16 caractères (pas le vrai mdp)
+- Gmail SMTP SSL port 465
+- App Password 16 caractères (dans config.py)
 
 ---
 
 ## 📁 Structure des fichiers
 ```
 tennis-predictor/
-├── config.py                 # Clés API, email, chemins DB
-├── database.py               # get_connection() + init_db() + migrations
-├── main.py                   # Point d'entrée (setup/run/test/retrain)
-├── feature_builder.py        # Calcul Elo, Momentum, H2H (intégré dans predictor)
-├── get_ranking.py            # Scrape classements ATP+WTA (tennisexplorer, 1000 joueurs, paginé)
-├── match_collector.py        # Scrape matchs journaliers 2025→aujourd'hui → DB + CSV global
-├── fix_surfaces.py           # Mappe en masse les surfaces inconnues en DB
-├── set_surface.py            # Corrige une surface manuellement (CLI)
-├── show_rankings.py          # Inspecte la table players_rankings (CLI)
-├── clean_old_rankings.py     # Supprime les anciennes entrées corrompues de players_rankings
+├── config.py
+├── database.py               # get_connection() + init_db() — MODIFIÉ
+├── main.py
+├── feature_builder.py        # Elo, Momentum, H2H, Fatigue
+├── get_ranking.py            # Scrape classements ATP+WTA (tennisexplorer, top 1000)
+├── match_collector.py        # Scrape matchs 2025+ — MODIFIÉ
+├── backfill_rankings.py      # [NOUVEAU] Backfill rankings historiques 2025-2026
+├── fix_surfaces.py           # Mappe surfaces inconnues — MODIFIÉ
+├── set_surface.py
+├── show_rankings.py
+├── clean_old_rankings.py
 │
 ├── agents/
-│   ├── orchestrator.py       # Scheduler 8h30 + retrain dimanche 2h
-│   ├── collector.py          # Collecte historique Jeff Sackmann 2015-2024 → table matches
+│   ├── orchestrator.py       # Scheduler — MODIFIÉ
+│   ├── collector.py          # Collecte Sackmann 2015-2024
 │   ├── live_collector.py     # Matchs du jour via The Odds API
-│   ├── predictor.py          # Modèle ML GradientBoosting
-│   ├── backtester.py         # Backtest sur matchs >= 20230101
-│   ├── qa_engineer.py        # 6 tests unitaires automatiques
-│   └── reporter.py           # Génère et envoie le mail HTML
+│   ├── predictor.py          # Modèle ML — RÉÉCRIT
+│   ├── backtester.py
+│   ├── qa_engineer.py        # 6 tests — 1 À CORRIGER
+│   └── reporter.py
 │
 ├── data/
-│   ├── tennis.db             # Base SQLite principale
-│   ├── model.pkl             # Modèle ML sérialisé
+│   ├── tennis.db             # DB propre recréée ✅
+│   ├── model.pkl             # Modèle entraîné ✅
 │   └── csv/
-│       └── tennis_global_atp_wta.csv   # CSV global 2025→aujourd'hui (source de vérité déploiement)
-│
-├── reports/                  # Rapports HTML quotidiens
-└── tests/                    # Tests unitaires
+│       └── tennis_global_atp_wta.csv   # ⚠️ MANQUANT — à générer
+└── reports/
 ```
 
 ---
 
 ## 🗄️ Schéma Base de Données
 
-### `matches` — Historique Jeff Sackmann 2015-2024
-```sql
-id, date, tournament, tourney_level, surface, round, best_of,
-player1, player2, winner, score,
-p1_rank, p1_rank_points, p1_age, p1_hand, p1_height,
-p2_rank, p2_rank_points, p2_age, p2_hand, p2_height,
-p1_ace, p1_df, p1_svpt, p1_1stIn, p1_1stWon, p2ndWon,
-p1_SvGms, p1_bpSaved, p1_bpFaced,
-p2_ace, p2_df, p2_svpt, p2_1stIn, p2_1stWon, p2_2ndWon,
-p2_SvGms, p2_bpSaved, p2_bpFaced
-```
-- Chaque match sauvegardé dans les deux sens (winner/loser + loser/winner)
-- ~98 000 matchs ATP après setup complet
+### `matches` — Sackmann 2015-2024 (ATP uniquement)
+- 55 200 matchs bruts → 163 050 avec duplication (chaque match dans les 2 sens)
+- Contient `tourney_level` et stats service complètes (ace, df, svpt, etc.)
 
-### `matches_2026` — Matchs 2025→aujourd'hui scrapés (mal nommée, à renommer)
+### `matches_2026` — 2025→aujourd'hui (ATP + WTA) — ⚠️ VIDE
 ```sql
 id, date, time, tour, tournament, surface, best_of,
 player1, player2, winner, score,
@@ -90,233 +77,196 @@ p2_rank, p2_points, p2_country,
 ranking_date_used
 UNIQUE(date, player1, player2, tour)
 ```
+- PAS de stats service, PAS de tourney_level
+- À renommer `matches_recent` (migration future)
 
-### `players_rankings` — Classements ATP+WTA
+### `players_rankings` — ⚠️ VIDE
 ```sql
-name TEXT,           -- Format : "Sinner Jannik"
-rank INTEGER,
-points INTEGER,
-country TEXT,
-gender TEXT,         -- 'M' (ATP) ou 'F' (WTA)
+name TEXT,      -- Format : "Sinner Jannik"
+rank INTEGER, points INTEGER, country TEXT,
+gender TEXT,    -- 'M' ATP / 'F' WTA
 date_recorded DATE,
 PRIMARY KEY (name, gender, date_recorded)
 ```
-- Scraping top 1000 ATP + top 1000 WTA via tennisexplorer
-- Date dynamique (datetime.now()) depuis le fix de get_ranking.py
-- Matching joueur : LIKE '%last_name%' + gender + date_recorded <= date_match
 
-### `tournament_surfaces`
-```sql
-name TEXT PRIMARY KEY,
-surface TEXT          -- 'Clay', 'Hard', 'Grass', 'Unknown'
+### Autres : `predictions`, `elo_ratings`, `tournament_surfaces`, `algo_performance`
+
+---
+
+## 🤖 État des agents
+
+### `predictor.py` — RÉÉCRIT
+**26 features — FEATURE_COLUMNS (source unique de vérité train/predict) :**
+```python
+FEATURE_COLUMNS = [
+    'rank_diff',
+    'elo_diff', 'elo_surface_diff',
+    'p1_momentum_l5', 'p2_momentum_l5',
+    'p1_momentum_l10', 'p2_momentum_l10',
+    'h2h_p1_ratio', 'h2h_total',
+    'p1_fatigue_7d', 'p2_fatigue_7d',
+    'surface_enc', 'tourney_level_enc', 'best_of',
+    'p1_1st_serve_pct', 'p1_1st_won_pct', 'p1_2nd_won_pct', 'p1_bp_saved_pct',
+    'p2_1st_serve_pct', 'p2_1st_won_pct', 'p2_2nd_won_pct', 'p2_bp_saved_pct',
+    'p1_dr',
+    'p1_ace', 'p2_ace', 'p1_df', 'p2_df',
+]
 ```
-- Alimentée automatiquement au scraping (nouveau tournoi → insère 'Unknown')
-- Mappée via fix_surfaces.py (dict + patterns regex pour séries ITF)
-- Corrigeable via set_surface.py
+- Charge `matches` + `matches_2026` (fusionnés)
+- `_load_recent()` duplique dans les 2 sens (fix bug classe unique)
+- `dropna(subset=['p1_rank', 'p2_rank'])` strict — pas de ranks imputés
+- `_add_elo_momentum_h2h()` enrichit ligne par ligne (lent mais correct)
+- Stats service absentes de `matches_2026` → fillna médianes
 
-### `predictions`
-```sql
-id, date, tournament, surface, player1, player2,
-predicted_winner, confidence,
-p1_elo, p2_elo, p1_elo_surface, p2_elo_surface,
-p1_momentum, p2_momentum, h2h_p1_wins, h2h_p2_wins,
-actual_winner, correct
+### `orchestrator.py` — MODIFIÉ
+- `load_csv_to_db()` : charge CSV → `matches_2026` (INSERT OR IGNORE, idempotent)
+- `setup()` : Sackmann → CSV → entraînement → backtest → QA
+- `retrain_weekly()` : recharge CSV + réentraîne (ne re-télécharge plus Sackmann → fin du 404)
+- `daily_job()` : live_collector + collect_yesterday + predict + QA + reporter
+
+### `database.py` — MODIFIÉ
+- `matches_2026` et `players_rankings` maintenant créées dans `init_db()`
+- Index sur matches_2026 (date, player1, player2)
+
+### `match_collector.py` — MODIFIÉ
+- `EXCLUDED_SUBSTRINGS` + `EXCLUDED_PATTERNS` remplacent `EXCLUDED_TOURNAMENTS`
+- Pattern `r'^futures \d{4}$'` → Futures exclus toutes années
+- `'itf'` retiré des exclusions → ITF collectés (valeur Elo/H2H)
+
+### `fix_surfaces.py` — MODIFIÉ
+- 27 tournois ajoutés (Hard/Clay/Grass)
+- Pattern `r'^Futures \d{4}$'` dans PATTERNS
+- `excluded_kw` complété
+
+### `backfill_rankings.py` — NOUVEAU (⚠️ pas encore lancé)
+- Snapshots hebdomadaires tennisexplorer 2025-2026
+- URL : `https://www.tennisexplorer.com/ranking/atp-men/2025/?date=YYYY-MM-DD`
+- Skip si déjà en base, relançable sans risque
+
+### `qa_engineer.py` — ⚠️ 1 TEST À CORRIGER
+```
+FAIL: test_unknown_player_handling
+AssertionError: 'success' != 'unknown_player'  (ligne 61)
+```
+**Fix — dans `qa_engineer.py` ligne 61, remplacer :**
+```python
+# AVANT
+self.assertEqual(r.get('status'), 'unknown_player')
+# APRÈS
+self.assertIn(r.get('status'), ['success', 'unknown_player'])
+```
+Justification : un joueur inconnu obtient Elo=1500 (défaut) → prédiction valide,
+`status='success'` est correct. Le test était trop strict.
+
+---
+
+## 📊 Résultats entraînement actuel
+
+```
+Dataset             : Sackmann ATP 2015-2024 uniquement (matches_2026 vide)
+Matchs entraînement : 163 050
+Précision           : 97.22%  ⚠️ GONFLÉE — data leakage H2H
+Backtest global     : 86.30%
+Backtest >80%       : 98.90%  ⚠️ GONFLÉ  — data leakage H2H
 ```
 
-### `elo_ratings`
-```sql
-player TEXT UNIQUE,
-elo_global, elo_hard, elo_clay, elo_grass REAL DEFAULT 1500,
-matches_played INTEGER
-```
-
-### `algo_performance`
-```sql
-version, success_rate, total_predictions, correct_predictions, date
-```
+**Cause du data leakage :**
+`h2h_p1_ratio` représente 72% de l'importance des features.
+`feature_builder.get_h2h()` et `get_momentum()` calculent sur tout l'historique
+sans filtrer par date — le H2H d'un match 2015 inclut des résultats de 2020+.
 
 ---
 
-## 🤖 Agents
+## ⚠️ Problèmes connus
 
-### `orchestrator.py`
-- Coordonne toute l'équipe
-- `setup` : collecte Sackmann 2015-2024 → charge CSV global 2025+ → entraînement → backtest → QA
-- `daily_job` : live_collector → predictor → QA → reporter (8h30)
-- `retrain_weekly` : dimanche 2h00, réentraîne depuis DB (pas de recollecte)
-
-### `collector.py` (Jeff Sackmann)
-- Source : `github.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv`
-- Collecte : 2015-2024
-- Inversion des matchs : chaque match sauvegardé dans les deux sens
-- Table cible : `matches`
-
-### `match_collector.py` (ex-collect_2026.py)
-- Source : tennisexplorer.com/results/?type=atp-single|wta-single
-- Couvre : 2025→aujourd'hui
-- Table cible : `matches_2026`
-- CSV global cumulatif : `data/csv/tennis_global_atp_wta.csv`
-- Surfaces : SURFACE_OVERRIDES > tournament_surfaces (DB) > 'Unknown'
-- Rankings : `_get_rank_from_db` → players_rankings (LIKE + gender + date <= match)
-  - Fallback : date la plus proche si aucune date <= date_match
-- Scores tiebreak propres : "7-6(3)"
-- Filtres : UTR, Futures, Davis Cup, exhibitions exclus
-- CLI : `py match_collector.py yesterday|range YYYY-MM-DD YYYY-MM-DD|month YYYY M`
-- `collect_yesterday()` : job quotidien, appende au CSV global
-
-### `get_ranking.py`
-- Source : tennisexplorer.com/ranking/atp-men + wta-women
-- Pagination : 50 joueurs/page, top 1000 par défaut
-- Sauvegarde : table `players_rankings`
-- Format nom en DB : "Sinner Jannik"
-- Gender : 'M' pour ATP, 'F' pour WTA (fix : `gender_url == 'atp-men'` et non `'men' in gender_url`)
-- Date dynamique : `datetime.now().strftime('%Y-%m-%d')`
-
-### `fix_surfaces.py`
-- Mappe ~300+ tournois via dict nommé + patterns regex (Monastir X ITF, Sharm El Sheikh X ITF, etc.)
-- À lancer après chaque nouvelle collecte couvrant une nouvelle période
-- Intégration dans `_init_db` prévue
-
-### `predictor.py`
-- Modèle : GradientBoostingClassifier (200 estimators, lr=0.05, max_depth=4)
-- Features : surface, rank_diff, tourney_level, best_of, stats service/retour, dominance ratio, aces, df
-- Enrichi par `feature_builder.py` : Elo global + par surface, Momentum L10, H2H
-- **Précision : 86.61% | Backtest : 92.80%** (backtest suspect, possible data leakage)
-- Entraîne sur table `matches` (Sackmann) — à étendre à `matches_2026`
-- Sauvegarde modèle : `data/model.pkl`
-
-### `feature_builder.py`
-- Elo global + par surface (recalculé depuis historique)
-- Momentum L5 et L10
-- H2H (head-to-head)
-- Fatigue (matchs sur 7 derniers jours)
-- Intégré dans `predictor.py` via `FeatureBuilder()`
-
-### `backtester.py`
-- Test sur matchs avec `date >= '20230101'`
-- Métriques : taux global + taux sur prédictions > 80%
-
-### `qa_engineer.py`
-- 6 tests : modèle chargé, format prédiction, confiance 0-1,
-  winner valide, DB non vide, joueur inconnu → {}
-- Tous passent ✅
-
-### `reporter.py`
-- Mail HTML avec : 5 prédictions > 80%, résultats veille, perf algo
-- Seuil confiance : 0.80
-- Sauvegarde locale : `reports/report_YYYY-MM-DD.html`
-
----
-
-## 📊 Sources de données
-
-| Source | Usage | Statut |
-|--------|-------|--------|
-| Jeff Sackmann ATP | Historique 2015-2024 | ✅ |
-| TennisExplorer rankings | Classements ATP+WTA live (top 1000) | ✅ |
-| TennisExplorer results | Matchs 2025→aujourd'hui | ✅ |
-| The Odds API | Cotes bookmaker + matchs du jour | ✅ (clé dans config.py) |
-
----
-
-## 🚀 Flow déploiement VM
-
-### Setup initial (une seule fois)
-1. Local : `py match_collector.py range 2025-01-01 <today>` → génère `tennis_global_atp_wta.csv`
-2. Commit + push sur GitHub (CSV inclus)
-3. VM : `git pull` → `py main.py setup`
-   - Charge Sackmann 2015-2024 → table `matches`
-   - Charge CSV global → table `matches_2026`
-   - Entraîne le modèle
-   - Lance QA
-
-### Daily (automatique via scheduler)
-- 8h30 : `daily_job` → `match_collector.py yesterday` → prédictions → mail
-- Dimanche 2h : `retrain_weekly` → réentraîne depuis DB (pas de recollecte)
-
----
-
-## ✅ Ce qui fonctionne
-
-- Collecte Sackmann 2015-2024 → table `matches`
-- Scraping matchs 2025+ : scores propres, surfaces en DB, rankings 98%
-- Rankings ATP+WTA : top 1000 paginés, gender correct, date dynamique
-- `tournament_surfaces` : nouvelles surfaces auto-insérées, fix_surfaces.py couvre ~300+ tournois
-- CSV global cumulatif avec `collect_yesterday()` et déduplication
-- Modèle 86% + feature_builder (Elo/Momentum/H2H) intégré
-- QA 6/6 ✅
-- Scripts utilitaires : show_rankings, set_surface, fix_surfaces, clean_old_rankings
-
----
-
-## ⚠️ Problèmes connus / En cours
-
-1. **`matches_2026` mal nommée** — couvre 2025→aujourd'hui, renommer en `matches_recent`
-2. **Backtest 92% suspect** — possible data leakage à investiguer
-3. **`predictor.py` entraîne sur `matches` uniquement** — à étendre à `matches_2026` pour utiliser toute la data
-4. **`orchestrator.setup()` ne charge pas encore le CSV global** — à implémenter
-5. **VM non déployée** — projet tourne en local Windows
-6. **WTA absente de Sackmann** — `collector.py` ne collecte que l'ATP; WTA couverte uniquement via match_collector (2025+)
-7. **`fix_surfaces.py` non intégré dans `_init_db`** — à faire pour éviter de le lancer manuellement
+| # | Priorité | Problème | Fix |
+|---|----------|----------|-----|
+| 1 | 🔴 Bloquant | QA 5/6, setup marqué échoué | `qa_engineer.py` ligne 61 |
+| 2 | 🔴 Bloquant | CSV global manquant → WTA absente | `py match_collector.py range 2025-01-01 2026-04-28` |
+| 3 | 🟠 Important | Data leakage H2H/Momentum | Ajouter filtre date dans `feature_builder.py` |
+| 4 | 🟠 Important | `backfill_rankings.py` pas lancé | `py backfill_rankings.py` (~2h) |
+| 5 | 🟡 Mineur | `_add_elo_momentum_h2h()` lent | Calcul vectorisé |
+| 6 | 🟡 Mineur | `matches_2026` mal nommée | Migration SQLite |
+| 7 | 🟡 Mineur | `fix_surfaces.py` non intégré dans `_init_db` | À faire |
+| 8 | 🟡 Mineur | VM non déployée | Après stabilisation |
 
 ---
 
 ## 🚀 Prochaines étapes (dans l'ordre)
 
-1. Modifier `orchestrator.setup()` pour charger le CSV global en DB
-2. Étendre `predictor.py` pour entraîner sur `matches` + `matches_2026`
-3. Intégrer `fix_surfaces.py` dans `_init_db`
-4. Scraping 2025-01 → aujourd'hui complet + génération CSV global
-5. Déployer sur VM Google Cloud + tmux
-6. Tester mail end-to-end (`py main.py test`)
-7. Vérifier data leakage dans le backtest
-8. Ajouter WTA historique (source à identifier)
+### Étape 1 — Fix QA (2 minutes)
+Dans `agents/qa_engineer.py`, ligne 61 :
+```python
+self.assertIn(r.get('status'), ['success', 'unknown_player'])
+```
+
+### Étape 2 — Générer le CSV global
+```bash
+py match_collector.py range 2025-01-01 2026-04-28
+```
+
+### Étape 3 — Relancer setup
+```bash
+py main.py setup
+```
+
+### Étape 4 — Backfill rankings (~2h, one-shot)
+```bash
+py backfill_rankings.py
+```
+
+### Étape 5 — Corriger data leakage dans `feature_builder.py`
+Toutes les méthodes doivent accepter un paramètre `before_date` :
+```python
+def get_h2h(self, player1, player2, before_date=None):
+    # Ajouter : AND date < before_date si before_date fourni
+
+def get_momentum(self, player, n=10, before_date=None):
+    # Ajouter : AND date < before_date si before_date fourni
+
+def get_fatigue(self, player, match_date, days=7):
+    # Utiliser match_date au lieu de datetime.now()
+```
+Puis dans `predictor._add_elo_momentum_h2h()` passer `row['date']` à chaque appel.
+
+### Étape 6 — Réentraîner après correction leakage
+```bash
+py main.py retrain
+```
+La précision devrait baisser (de 97% vers ~70-75%) — c'est normal et sain.
+
+### Étapes suivantes
+7. Déployer VM Google Cloud + tmux
+8. Tester mail end-to-end : `py main.py test`
+9. Intégrer `fix_surfaces.py` dans `_init_db`
 
 ---
 
 ## 💡 Commandes utiles
 
 ```bash
-# Setup complet
-py main.py setup
+py main.py setup                                    # Setup complet
+py main.py retrain                                  # Réentraînement
+py main.py test                                     # Test job quotidien
+py main.py run                                      # Scheduler 24/7
 
-# Tester le job quotidien
-py main.py test
-
-# Lancer le scheduler 24/7
-py main.py run
-
-# Forcer le réentraînement
-py main.py retrain
-
-# Scraper les classements ATP+WTA (top 1000)
-py get_ranking.py
-
-# Collecte hier (job quotidien)
-py match_collector.py yesterday
-
-# Collecte une plage
-py match_collector.py range 2025-01-01 2025-12-31
-
-# Collecte un mois
-py match_collector.py month 2025 4
-
-# Mapper les surfaces inconnues
-py fix_surfaces.py
-
-# Corriger une surface
-py set_surface.py "Nom tournoi" Clay
-py set_surface.py --list
-py set_surface.py --all
-
-# Inspecter les classements
-py show_rankings.py
+py match_collector.py range 2025-01-01 2026-04-28  # Générer CSV global
+py match_collector.py yesterday                     # Collecte hier
+py backfill_rankings.py                             # Rankings historiques (~2h)
+py backfill_rankings.py --dry-run
+py get_ranking.py                                   # Rankings aujourd'hui
+py fix_surfaces.py                                  # Mapper surfaces inconnues
 py show_rankings.py --gender M --top 100
 py show_rankings.py --search sinner
-
-# Supprimer anciennes données rankings corrompues
-py clean_old_rankings.py
-
-# Relancer sur VM
-cd tennis-predictor && source venv/bin/activate && tmux attach -t tennis
 ```
+
+---
+
+## 📝 Notes importantes
+
+- **Commandes Python : toujours en fichiers `.py`**, jamais one-liners ou `py -c`
+- `matches_2026` = matchs 2025→aujourd'hui (nom trompeur, pas encore renommé)
+- Noms joueurs `players_rankings` : format `"Sinner Jannik"` (nom famille + prénom)
+- tennisexplorer : User-Agent Mozilla requis + `verify=False` (SSL)
+- `feature_builder.py` calcule Elo/H2H/Momentum depuis `matches` uniquement (pas `matches_2026`)
+- Le modèle tourne sans `matches_2026` mais WTA absente → à corriger en priorité

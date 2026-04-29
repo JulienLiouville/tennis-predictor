@@ -1,38 +1,36 @@
-import sqlite3
-from datetime import datetime
-from config import DB_PATH
+"""
+Test de validation du feature_builder — isolation temporelle H2H.
+À lancer depuis la racine du projet : py test_feature_builder.py
+"""
+from agents.feature_builder import FeatureBuilder
 
+fb = FeatureBuilder()
 
-def show_all_predictions():
-    today = datetime.now().strftime('%Y-%m-%d')
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+print("\n=== Test isolation temporelle H2H ===")
+print("Dimitrov vs Rune — 4 matchs en DB : 20230703, 20230927, 20240101, 20240408")
+print("Filtre < 20240107 → attendu : 3 matchs (exclu 20240408)")
 
-    # On récupère tout sans filtre de confiance
-    query = """
-        SELECT DISTINCT player1, player2, surface, predicted_winner, confidence 
-        FROM predictions 
-        WHERE date = ? 
-        AND predicted_winner != 'Inconnu (Nouveau joueur)'
-        ORDER BY confidence DESC
-    """
+h2h = fb.get_h2h("Grigor Dimitrov", "Holger Rune", "20240107")
+print(f"Résultat : {h2h}")
 
-    print(f"\n--- TOUTES LES PRÉDICTIONS DU {today} ---")
-    cursor.execute(query, (today,))
-    rows = cursor.fetchall()
+if h2h['total'] == 3:
+    print("✅ Isolation temporelle OK — pas de data leakage")
+elif h2h['total'] == 0:
+    print("❌ total=0 : problème de connexion DB ou format de date")
+    print("   Vérifie que database.py est accessible depuis ce répertoire")
+elif h2h['total'] == 4:
+    print("❌ total=4 : filtre temporel ignoré — data leakage présent")
+elif h2h['total'] == 6:
+    print("❌ total=6 : duplication non corrigée + pas de filtre temporel")
+elif h2h['total'] == 8:
+    print("❌ total=8 : duplication non corrigée ET pas de filtre temporel")
+else:
+    print(f"❌ Résultat inattendu : total={h2h['total']}")
 
-    if not rows:
-        print("⚠️ Aucune prédiction trouvée en base pour aujourd'hui.")
-        print("Lance 'py main.py test' pour en générer.")
-    else:
-        for row in rows:
-            p1, p2, surf, winner, conf = row
-            # On affiche tout, même le "bruit"
-            status = "🔥" if conf >= 0.8 else "⚖️"
-            print(f"{status} {p1} vs {p2} ({surf}) -> Vainqueur : {winner} | Confiance : {conf * 100:.2f}%")
+print("\n=== Test momentum ===")
+m = fb.get_momentum("Grigor Dimitrov", 10, "20240107")
+print(f"Momentum Dimitrov (10 matchs avant 20240107) : {m}")
 
-    conn.close()
-
-
-if __name__ == "__main__":
-    show_all_predictions()
+print("\n=== Test fatigue ===")
+f = fb.get_fatigue("Grigor Dimitrov", "20240107")
+print(f"Fatigue Dimitrov (7j avant 20240107) : {f}")
