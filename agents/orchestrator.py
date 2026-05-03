@@ -119,7 +119,7 @@ class OrchestratorAgent:
 
         # 4. Backtest
         print("\n📊 Étape 4 : Backtest...")
-        backtest = self.backtester.run(test_size=1000)
+        backtest = self.backtester.run(test_size=1000, predictor=self.predictor)
 
         # 5. QA
         print("\n🧪 Étape 5 : Validation QA...")
@@ -185,7 +185,7 @@ class OrchestratorAgent:
         accuracy = self.predictor.train()
 
         # Backtest
-        backtest = self.backtester.run(test_size=2000)
+        backtest = self.backtester.run(test_size=2000, predictor=self.predictor)
 
         # QA
         qa_report = self.qa.run()

@@ -246,23 +246,20 @@ class PredictorAgent:
         print(f"✅ Entraînement terminé. Précision : {acc:.2%}")
 
         os.makedirs("data", exist_ok=True)
-        with open(self.model_path, 'wb') as f:
-            pickle.dump(self.model, f)
+        self.save_model()
         self.is_trained = True
         return acc
 
         # ─── PRÉDICTION ───────────────────────────────────────────────────────────
 
-    def predict(self, p1, p2, surface, p1_rank=100, p2_rank=100):
+    def predict(self, p1, p2, surface, p1_rank=100, p2_rank=100,date_limit=None):
         if not self.is_trained:
             if os.path.exists(self.model_path):
-                with open(self.model_path, 'rb') as f:
-                    self.model = pickle.load(f)
-                self.is_trained = True
+                self.load_model()  # ← utilise load_model() plutôt que pickle brut
             else:
                 return {"status": "error", "message": "Modèle non entraîné"}
 
-        feats = self.fb.build_features(p1, p2, surface)
+        feats = self.fb.build_features(p1, p2, surface, date_limit=date_limit)
         feats['rank_diff'] = p2_rank - p1_rank
         feats['surface_enc'] = self.le_surface.transform([surface if surface in ['Hard', 'Clay', 'Grass'] else 'Hard'])[
             0]
