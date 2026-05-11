@@ -3,7 +3,7 @@
 ## 📋 Vue d'ensemble
 Application multi-agent de prédiction de paris sportifs tennis (ATP + WTA).
 Objectif : envoyer un mail quotidien à 8h30 avec 5 prédictions > 80% de confiance.
-Stack : Python 3.10, SQLite, scikit-learn, BeautifulSoup, schedule, Gmail SMTP.
+Stack : Python 3.10+, SQLite, scikit-learn, BeautifulSoup, schedule, Gmail SMTP.
 Repo GitHub public : github.com/JulienLiouville/tennis-predictor
 
 ---
@@ -31,33 +31,37 @@ Repo GitHub public : github.com/JulienLiouville/tennis-predictor
 ```
 tennis-predictor/
 ├── config.py
-├── database.py               # init_db() + get_connection()
+├── database.py               # init_db() + get_connection() + _run_migrations()
 ├── main.py
-├── match_collector.py        # Scrape matchs 2025+
+├── precompute_features.py    # ⭐ One-shot local — peuple match_features en DB
+├── match_collector.py        # Scrape matchs 2025+ — delta auto depuis CSV, résolution noms, migrate_names()
 ├── backfill_rankings.py      # Backfill rankings historiques 2025-2026
 ├── fix_surfaces.py           # Mappe surfaces inconnues
 ├── get_ranking.py            # Scrape classements ATP+WTA (top 1000)
 ├── set_surface.py
 ├── show_rankings.py
 ├── clean_old_rankings.py
+├── verify_fixes.py           # Vérifie les corrections pkl/date_limit
+├── quick_train.py            # Train rapide sur dataset réduit (debug)
+├── debug_backtest.py         # Diagnostique backtest
 ├── test_feature_builder.py   # Test isolation temporelle H2H
 ├── test_model_range.py       # Test modèle sur range de dates limité
 │
 ├── agents/
 │   ├── orchestrator.py       # Scheduler + setup + retrain
 │   ├── collector.py          # Collecte Sackmann 2015-2024
-│   ├── live_collector.py     # Matchs du jour via The Odds API
+│   ├── live_collector.py     # Hybride tennisexplorer + Odds API
 │   ├── predictor.py          # Modèle ML GradientBoosting
 │   ├── backtester.py         # Backtest sur matchs historiques
-│   ├── feature_builder.py    # Elo, Momentum, H2H, Fatigue
+│   ├── feature_builder.py    # UNION matches + matches_2026 dans get_h2h/get_momentum/get_fatigue ✅
 │   ├── qa_engineer.py        # 6 tests unitaires
 │   └── reporter.py           # Mail HTML quotidien
 │
 ├── data/
-│   ├── tennis.db
-│   ├── model.pkl
+│   ├── tennis.db             # ⚠️ NE JAMAIS SUPPRIMER EN PROD
+│   ├── model.pkl             # Peut être supprimé et régénéré
 │   └── csv/
-│       └── tennis_global_atp_wta.csv   # CSV global 2025→aujourd'hui
+│       └── tennis_global_atp_wta.csv
 └── reports/
 ```
 
@@ -69,6 +73,24 @@ tennis-predictor/
 - ~55 200 matchs bruts → stockés dans les **2 sens** (winner/loser + loser/winner)
 - Contient `tourney_level` et stats service complètes (ace, df, svpt, etc.)
 - Format date : `YYYYMMDD` (sans tirets)
+
+### `match_features` — Features pré-calculées ⭐
+```sql
+match_id         INTEGER PRIMARY KEY  -- FK → matches.id
+p1_momentum_l5   REAL
+p1_momentum_l10  REAL
+p2_momentum_l5   REAL
+p2_momentum_l10  REAL
+h2h_p1_ratio     REAL
+h2h_total        INTEGER
+p1_fatigue_7d    INTEGER
+p2_fatigue_7d    INTEGER
+computed_at      TEXT
+```
+- Peuplée par `precompute_features.py` (one-shot local, ~15 min)
+- **Idempotente** : skip les match_id déjà présents
+- Jointure dans `predictor._load_sackmann()` → `train()` rapide (secondes)
+- ⚠️ NE PAS supprimer — coûteux à recalculer
 
 ### `matches_2026` — 2025→aujourd'hui (ATP + WTA)
 ```sql
@@ -82,8 +104,8 @@ ranking_date_used
 UNIQUE(date, player1, player2, tour)
 ```
 - PAS de stats service, PAS de `tourney_level`
-- **Stocké en un seul sens** (pas de duplication)
-- À renommer `matches_recent` (migration future)
+- Stocké en **un seul sens** (pas de duplication)
+- Format date : `YYYY-MM-DD` (avec tirets)
 
 ### `players_rankings`
 ```sql
@@ -93,118 +115,100 @@ gender TEXT,    -- 'M' ATP / 'F' WTA
 date_recorded DATE,
 PRIMARY KEY (name, gender, date_recorded)
 ```
-- Top 1000 ATP + WTA via tennisexplorer
-- Matching : `LIKE '%last_name%'` + gender + `date_recorded <= date_match`
+- 110 snapshots hebdomadaires 2025-2026 (backfill terminé ✅)
 
-### Autres : `predictions`, `elo_ratings`, `tournament_surfaces`, `algo_performance`
+### `predictions`
+```sql
+id, date, tournament, surface,
+player1, player2, predicted_winner, confidence,
+p1_rank, p2_rank, odds_p1, odds_p2,
+p1_elo, p2_elo, p1_elo_surface, p2_elo_surface,
+p1_momentum, p2_momentum,
+h2h_p1_wins, h2h_p2_wins,
+actual_winner, correct
+```
+
+### Autres : `elo_ratings`, `tournament_surfaces`, `algo_performance`
 
 ---
 
 ## 🤖 État des agents
 
-### `feature_builder.py` ✅
-**Isolation temporelle complète — data leakage corrigé.**
+### `feature_builder.py` ✅ FIXÉ
+**UNION avec `matches_2026` ajoutée dans `get_h2h`, `get_momentum`, `get_fatigue`.**
 
-Toutes les méthodes acceptent `date_limit` (YYYYMMDD ou YYYY-MM-DD) et ne regardent
-que les matchs strictement antérieurs à cette date.
+Problème racine découvert : `matches_2026` stockait les noms en format abrégé
+(`"Sinner J."`) alors que `feature_builder` cherche en format complet (`"Sinner Jannik"`).
+Fix appliqué dans `match_collector.py` : résolution des noms via `players_rankings`
+à la collecte + méthode `migrate_names()` pour normaliser l'existant.
 
-Déduplication systématique via `match_key = date + '_' + joueurs_triés` dans les 3
-méthodes pour éviter le double-comptage dû au stockage Sackmann en 2 sens.
+### `predictor.py` ✅ FIXÉ
+**`train()` utilise `match_features` (pré-calculées) — rapide (secondes).**
 
-```python
-get_h2h(p1, p2, date_limit)      # H2H avant date_limit, dédupliqué
-get_momentum(player, n, date_limit)  # Ratio victoires N derniers matchs
-get_fatigue(player, date_limit, days=7)  # Nb matchs sur 7 derniers jours
-get_elo(player, surface=None)     # Depuis elo_ratings (calculé à l'entraînement)
-build_features(p1, p2, surface, date_limit=None)  # Vecteur complet
-```
+- `_load_recent()` : filtre `p1_rank IS NOT NULL` supprimé (ranks souvent NULL dans matches_2026, fallback 150 dans prepare_features)
+- `load_training_data()` : `dropna(subset=['p1_rank','p2_rank'])` supprimé
 
-**Validation :** `py test_feature_builder.py` — Dimitrov vs Rune retourne 3 matchs
-(pas 6 ou 8) avant le 07/01/2024. ✅
-
-### `predictor.py` ✅
-**26 features — FEATURE_COLUMNS (source unique de vérité train/predict) :**
 ```python
 FEATURE_COLUMNS = [
     'rank_diff',
-    'elo_diff', 'elo_surface_diff',
     'p1_momentum_l5', 'p2_momentum_l5',
     'p1_momentum_l10', 'p2_momentum_l10',
     'h2h_p1_ratio', 'h2h_total',
     'p1_fatigue_7d', 'p2_fatigue_7d',
-    'surface_enc', 'tourney_level_enc', 'best_of',
-    'p1_1st_serve_pct', 'p1_1st_won_pct', 'p1_2nd_won_pct', 'p1_bp_saved_pct',
-    'p2_1st_serve_pct', 'p2_1st_won_pct', 'p2_2nd_won_pct', 'p2_bp_saved_pct',
-    'p1_dr',
-    'p1_ace', 'p2_ace', 'p1_df', 'p2_df',
+    'surface_enc',
 ]
 ```
-- Charge `matches` (Sackmann) + `matches_2026` fusionnés
-- `_load_recent()` duplique dans les 2 sens (pour avoir les 2 classes)
-- `dropna(subset=['p1_rank', 'p2_rank'])` strict
-- `_add_elo_momentum_h2h()` passe `row['date']` à `build_features()` → isolation temporelle
-- Stats service absentes de `matches_2026` → fillna médianes
-- `predict()` accepte `date_limit` optionnel (pour le backtest)
+
+- `_load_sackmann()` : INNER JOIN avec `match_features`
+- `_load_recent()` : matches_2026 avec features à 0.5/0 par défaut
+- `save_model()` / `load_model()` : dict `{model, le_surface, feature_columns}` ✅
+- `predict()` : accepte `date_limit` optionnel
+- `process_pending_predictions()` : lookup rank depuis `players_rankings` si NULL ✅
 
 ### `backtester.py` ✅
-- Accepte `predictor=` optionnel → réutilise l'instance déjà entraînée (pas de rechargement pkl)
-- Déduplication des matchs Sackmann avant le backtest
-- Teste sur `matches` avec `date >= '20230101'`
+- Requête `player1 = winner` → ground truth cohérent
+- Passe `p1_rank`/`p2_rank` et `date_limit` à `predict()`
+- Résultats : 63.50% global, **85.19% sur prédictions >80%** ✅
 
-### `orchestrator.py` ✅
-- `load_csv_to_db()` : charge CSV → `matches_2026` (INSERT OR IGNORE, idempotent)
-- `setup()` : Sackmann → CSV → entraîne → backtest (avec `predictor=self.predictor`) → QA
-- `retrain_weekly()` : recharge CSV + réentraîne (ne re-télécharge plus Sackmann)
+### `live_collector.py` ✅
+**Architecture hybride tennisexplorer + Odds API.**
+- Scraping tennisexplorer : 77 matchs/jour ATP+WTA ✅
+- Résolution noms abrégés → noms complets via `players_rankings` ✅
+  - `"Hurkacz H."` → `"Hurkacz Hubert"` via LIKE sur nom de famille
+  - Cache en mémoire pour éviter requêtes répétées
+- Merge Odds API par nom normalisé (sans accents, lowercase)
+- Sauvegarde robuste : tournament_surfaces et odds_p1/p2 en try/except
+
+### `orchestrator.py` 🔴 BUG EN COURS
+- `setup()` : Sackmann → CSV → entraîne → backtest → QA
+- `retrain_weekly()` : recharge CSV + réentraîne
 - `daily_job()` : live_collector + collect_yesterday + predict + QA + reporter
+- **BUG** : `load_csv_to_db()` insère les surfaces telles quelles depuis le CSV (`"Unknown"`) → `_load_recent()` filtre `surface IN ("Hard","Clay","Grass")` → 0 matchs chargés → entraînement impossible
+- **Fix appliqué** : résoudre la surface via `tournament_surfaces` au moment du chargement CSV (non encore validé)
 
 ### `database.py` ✅
-- `matches_2026` et `players_rankings` créées dans `init_db()`
-- Index sur matches_2026 (date, player1, player2)
+- Toutes les tables présentes dont `match_features`
+- `_run_migrations()` : ajoute colonnes manquantes sur DB existantes
+- Colonnes `p1_rank`, `p2_rank`, `odds_p1`, `odds_p2`, `tournament` dans predictions
 
-### `qa_engineer.py` ✅
-- `test_unknown_player_handling` corrigé : accepte `status='success'` ou `'unknown_player'`
-- 6/6 tests passent
+### `qa_engineer.py` ✅ — 6/6 tests
 
-### `match_collector.py` ✅
-- `EXCLUDED_SUBSTRINGS` + `EXCLUDED_PATTERNS` remplacent `EXCLUDED_TOURNAMENTS`
-- Pattern `r'^futures \d{4}$'` → Futures exclus toutes années
-- ITF conservés (utile pour Elo/H2H)
-
-### `fix_surfaces.py` ✅
-- 27 tournois ajoutés (Hard/Clay/Grass)
-- Pattern `r'^Futures \d{4}$'` dans PATTERNS
-- Surface Unknown < 0.1% après application
-
-### `backfill_rankings.py` ✅ (⚠️ pas encore lancé)
-- Snapshots hebdomadaires tennisexplorer 2025-2026
-- URL : `https://www.tennisexplorer.com/ranking/atp-men/2025/?date=YYYY-MM-DD`
-- Skip si déjà en base, relançable sans risque
+### `precompute_features.py` ✅ (one-shot local)
+- 54 350 matchs dans `match_features`
+- Idempotent, RAM-safe (batch 5000)
 
 ---
 
 ## 📊 Résultats validés
 
-### Test sur range limité (test_model_range.py)
 ```
-Train : 2015-2020 (5000 matchs bruts → 5000 après dédup → x2 = 10000)
-Test  : 2021-2022 (1000 matchs bruts → x2 = 2000)
-Précision globale  : 61.30%  ✅ sans data leakage
-Prédictions >80%   : 91/1000
-Précision sur >80% : 85.71%  ✅
-```
-
-### Top features (sans leakage)
-```
-rank_diff          : 70.28%  (dominant, cohérent)
-p2_momentum_l10    : 6.73%
-p1_momentum_l10    : 6.66%
-p1_momentum_l5     : 4.17%
-h2h_p1_ratio       : 2.55%  (était 72% avec leakage → corrigé ✅)
-```
-
-### Setup complet (Sackmann uniquement, matches_2026 vide au moment du test)
-```
-Précision : 65.45%  ✅ sain
+Précision modèle   : 61.71%  ✅ (ancien run, à revalider)
+Backtest global    : 63.50%  ✅ (ancien run, à revalider)
+Backtest >80%      : 85.19% sur 54 prédictions  ✅ (ancien run)
+QA                 : 6/6  ✅ (ancien run)
+Mail end-to-end    : ✅
+Scraping           : 36-77 matchs/jour  ✅
+Prédictions >80%   : 0 — pipeline entraînement bloqué (surfaces NULL)  🔴
 ```
 
 ---
@@ -213,66 +217,86 @@ Précision : 65.45%  ✅ sain
 
 | # | Priorité | Problème | Fix |
 |---|----------|----------|-----|
-| 1 | 🟠 Important | `backfill_rankings.py` pas lancé → ranks historiques manquants | `py backfill_rankings.py` (~2h) |
-| 2 | 🟠 Important | `matches_2026` chargé mais ranks datés 2026-04-26 sur tout | Corriger après backfill |
-| 3 | 🟡 Mineur | `_add_elo_momentum_h2h()` lent (appel DB par ligne) | Calcul vectorisé futur |
-| 4 | 🟡 Mineur | `matches_2026` mal nommée | Migration SQLite future |
-| 5 | 🟡 Mineur | `fix_surfaces.py` non intégré dans `_init_db` | À faire |
-| 6 | 🟡 Mineur | VM non déployée | Après stabilisation |
-| 7 | 🟡 Mineur | WTA absente de Sackmann | Couverte via matches_2026 (2025+) |
-| 8 | 🟡 Mineur | `feature_builder` calcule depuis `matches` uniquement | Étendre à matches_2026 |
+| 1 | 🔴 **TOP PRIO** | `orchestrator.load_csv_to_db()` insère surfaces `"Unknown"` → `_load_recent()` filtre Hard/Clay/Grass → 0 matchs → entraînement impossible | Résoudre surface via `tournament_surfaces` avant insertion — fix écrit, non encore validé |
+| 2 | 🔴 **TOP PRIO** | `matches_2026` contient 444k lignes (doublons setup multiple) et surfaces toutes NULL | Vider la table, lancer `fix_surfaces.py`, puis `py main.py setup` |
+| 3 | 🔴 **TOP PRIO** | `match_features` vide (0 lignes) | Lancer `py precompute_features.py` après setup Sackmann (~15 min) |
+| 4 | 🟠 Important | Noms dans `matches_2026` en format abrégé (`"Sinner J."`) au lieu de complet (`"Sinner Jannik"`) | `py match_collector.py migrate` — résolution via `players_rankings` |
+| 5 | 🟠 Important | `matches_2026` sans `match_features` → features à 0.5 à l'entraînement | Étendre `precompute_features.py` à `matches_2026` |
+| 6 | 🟠 Important | Merge Odds API : 0/77 matchs enrichis | Résolution noms faite pour TE→DB, Odds API à investiguer |
+| 7 | 🟡 Mineur | Doublons dans `predictions` si `daily_job` lancé 2× | Ajouter UNIQUE(date, player1, player2) |
+| 8 | 🟡 Mineur | `matches_2026` mal nommée (contient 2025+) | Migration SQLite → `matches_recent` |
+| 9 | 🟡 Mineur | VM non déployée | Après stabilisation |
 
 ---
 
 ## 🚀 Prochaines étapes (dans l'ordre)
 
-1. **Supprimer l'ancien model.pkl et relancer setup complet :**
-   ```bash
-   del data\model.pkl
-   py main.py setup
-   ```
+### 1. 🔴 Vider matches_2026 et corriger le pipeline setup
+```bash
+# Vider la table corrompue (444k lignes avec surfaces NULL)
+# Dans SQLite : DELETE FROM matches_2026;
 
-2. **Lancer backfill rankings** (~2h, one-shot) :
-   ```bash
-   py backfill_rankings.py
-   ```
+# Mapper les surfaces
+py fix_surfaces.py
 
-3. **Régénérer le CSV avec les bons ranks** :
-   ```bash
-   py match_collector.py range 2025-01-01 2026-05-03
-   ```
+# Normaliser les noms existants dans le CSV
+py match_collector.py migrate
 
-4. **Retrain avec données complètes** :
-   ```bash
-   py main.py retrain
-   ```
+# Relancer le setup (avec orchestrator.py fixé)
+py main.py setup
+```
 
-5. **Tester mail end-to-end** :
-   ```bash
-   py main.py test
-   ```
+### 2. 🔴 Recalculer match_features (après setup Sackmann)
+```bash
+py precompute_features.py    # ~15 min, idempotent
+```
 
-6. **Déployer VM Google Cloud** + tmux
+### 3. Valider le pipeline complet
+```bash
+py main.py test              # job quotidien complet
+```
 
-7. **Optimiser `_add_elo_momentum_h2h()`** si l'entraînement est trop lent
+### 4. Déployer VM Google Cloud
+```bash
+scp data/tennis.db user@vm-ip:~/tennis-predictor/data/
+scp data/model.pkl user@vm-ip:~/tennis-predictor/data/
+tmux new -s tennis
+python main.py run
+```
 
 ---
 
 ## 💡 Commandes utiles
 
 ```bash
-py main.py setup                                     # Setup complet
-py main.py retrain                                   # Réentraînement
-py main.py test                                      # Test job quotidien
-py main.py run                                       # Scheduler 24/7
+# Pipeline principal
+py main.py setup          # Setup complet
+py main.py retrain        # Réentraînement (rapide)
+py main.py test           # Test job quotidien
+py main.py run            # Scheduler 24/7
 
-py match_collector.py range 2025-01-01 2026-05-03   # Générer CSV global
-py match_collector.py yesterday                      # Collecte hier
-py backfill_rankings.py                              # Rankings historiques (~2h)
-py backfill_rankings.py --dry-run                    # Test sans scraper
-py get_ranking.py                                    # Rankings aujourd'hui
-py fix_surfaces.py                                   # Mapper surfaces inconnues
-py test_feature_builder.py                           # Valider isolation temporelle
+# Collecte données
+py match_collector.py                          # delta auto depuis CSV (date max → aujourd'hui)
+py match_collector.py range 2025-01-01 2026-05-09
+py match_collector.py yesterday
+py match_collector.py migrate                  # normalise noms abrégés → complets en DB+CSV
+py backfill_rankings.py
+py get_ranking.py
+
+# Surfaces
+py fix_surfaces.py                             # mappe toutes les surfaces connues
+py set_surface.py 'Nom tournoi' Clay           # setter manuellement
+
+# Features & modèle
+py precompute_features.py
+py precompute_features.py --test 500
+py precompute_features.py --reset
+
+# Debug
+py verify_fixes.py
+py quick_train.py --size 3000
+py debug_backtest.py
+py test_feature_builder.py
 py show_rankings.py --gender M --top 100
 py show_rankings.py --search sinner
 ```
@@ -281,12 +305,32 @@ py show_rankings.py --search sinner
 
 ## 📝 Notes importantes
 
-- **Commandes Python : toujours en fichiers `.py`**, jamais one-liners ou `py -c`
-- `matches` stocke chaque match dans **2 sens** (Sackmann) → toujours dédupliquer avant analyse
-- `matches_2026` stocke en **1 seul sens** → dupliquer dans `_load_recent()` pour l'entraînement
-- Format date `matches` : `YYYYMMDD` (sans tirets)
-- Format date `matches_2026` : `YYYY-MM-DD` (avec tirets)
-- `feature_builder` normalise les deux formats via `_normalize_date()`
-- Noms joueurs `players_rankings` : format `"Sinner Jannik"` (nom famille + prénom)
-- tennisexplorer : User-Agent Mozilla requis + `verify=False` (SSL)
-- Si `model.pkl` plante au chargement → le supprimer et réentraîner
+- **Commandes Python : toujours en fichiers `.py`**, jamais one-liners
+- `tennis.db` : **NE JAMAIS SUPPRIMER** — contient `match_features`
+- `model.pkl` : peut être supprimé et régénéré librement
+- `matches` : 2 sens (Sackmann) → toujours dédupliquer par `match_key`
+- `matches_2026` : 1 seul sens → dupliquer dans `_load_recent()` pour l'entraînement
+- `matches_2026` : mal nommée — contient 2025+ (amélioration non obligatoire : renommer en `matches_recent`)
+- Format date `matches` : `YYYYMMDD` | `matches_2026` : `YYYY-MM-DD`
+- Noms `players_rankings` : `"Sinner Jannik"` (famille + prénom)
+- Noms tennisexplorer : `"Sinner J."` (famille + initiale) → résolution via `_resolve_name()` dans `match_collector` et `_resolve_player_name()` dans `live_collector`
+- Surfaces dans CSV : `"Unknown"` pour tournois non mappés → toujours lancer `fix_surfaces.py` avant `setup`
+- ITF et UTR Pro exclus du scraping (`EXCLUDED_SUBSTRINGS` dans `match_collector.py`)
+- tennisexplorer : User-Agent Mozilla requis + `verify=False`
+- Backtest : requête `player1 = winner` pour ground truth cohérent
+
+## 🏛️ Architecture décisions
+
+| Décision | Raison |
+|----------|--------|
+| `match_features` en DB | train() 10h → quelques secondes |
+| Précalcul local uniquement | VM e2-micro 1 Go RAM insuffisante |
+| `save_model()` dict | Cohérence avec `load_model()` |
+| `predict()` accepte `date_limit` | Isolation temporelle backtest |
+| Déduplication Sackmann systématique | Chaque match stocké 2× dans `matches` |
+| Backtest `player1 = winner` | Ground truth cohérent sans dédup |
+| live_collector hybride TE + Odds API | Volume (TE) + cotes (Odds API) |
+| Résolution noms à la collecte | Fix une fois → tout le pipeline bénéficie |
+| ITF/UTR exclus du scraping | Joueurs hors `players_rankings`, polluent les features |
+| `fix_surfaces.py` avant setup | Surfaces `"Unknown"` dans CSV → 0 matchs chargés sinon |
+| delta auto dans `match_collector.py` | Évite de re-scraper l'existant |

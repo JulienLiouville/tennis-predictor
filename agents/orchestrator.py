@@ -37,6 +37,7 @@ class OrchestratorAgent:
         """
         Charge le CSV global (2025→aujourd'hui) dans matches_2026.
         Idempotent : INSERT OR IGNORE sur la contrainte UNIQUE(date, player1, player2, tour).
+        Résout la surface via tournament_surfaces avant insertion.
         """
         if not os.path.exists(CSV_PATH):
             print(f"⚠️  CSV introuvable : {CSV_PATH}")
@@ -46,6 +47,11 @@ class OrchestratorAgent:
         print(f"📥 Chargement du CSV global → matches_2026...")
         conn = get_connection()
         c = conn.cursor()
+
+        # Charge la map tournament_surfaces en mémoire (évite 1 requête par ligne)
+        c.execute("SELECT tournament_key, surface FROM tournament_surfaces WHERE surface != 'Unknown'")
+        surface_map = {row[0]: row[1] for row in c.fetchall()}
+
         inserted = 0
         skipped = 0
 
@@ -53,6 +59,12 @@ class OrchestratorAgent:
             reader = csv.DictReader(f)
             for row in reader:
                 try:
+                    # Résout la surface : CSV → tournament_surfaces → fallback CSV
+                    tournament = row.get('tournament', '')
+                    surface = surface_map.get(tournament) or row.get('surface') or 'Hard'
+                    if surface not in ('Hard', 'Clay', 'Grass'):
+                        surface = 'Hard'  # fallback final
+
                     c.execute('''
                         INSERT OR IGNORE INTO matches_2026
                         (date, time, tour, tournament, surface, best_of,
@@ -65,7 +77,7 @@ class OrchestratorAgent:
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ''', (
                         row.get('date'), row.get('time'), row.get('tour'),
-                        row.get('tournament'), row.get('surface'),
+                        tournament, surface,
                         row.get('best_of') or 3,
                         row.get('player1'), row.get('player2'), row.get('winner'),
                         row.get('score'),

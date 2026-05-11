@@ -15,41 +15,33 @@ class BacktesterAgent:
         print("✅ BacktesterAgent initialisé")
 
     def run(self, test_size: int = 1000, predictor: PredictorAgent = None) -> dict:
-        """
-        predictor : si fourni, utilise cette instance déjà entraînée.
-                    Sinon, charge le modèle depuis le pkl.
-        """
         print(f"🔄 Backtest sur {test_size} matchs (données non vues)...")
 
-        # Utilise le predictor passé en paramètre ou charge depuis pkl
         agent = predictor if (predictor and predictor.is_trained) else self.predictor
         if not agent.is_trained:
             agent.load_model()
 
         conn = get_connection()
 
-        # Charge depuis matches (Sackmann) avec déduplication
-        df_raw = pd.read_sql_query('''
-            SELECT player1, player2, winner, surface, date
+        # player1 = winner uniquement → ground truth cohérent, pas besoin de dédup
+        df = pd.read_sql_query('''
+            SELECT player1, player2, winner, surface, date,
+                   p1_rank, p2_rank
             FROM matches
             WHERE date >= '20230101'
             AND surface IN ('Hard', 'Clay', 'Grass')
             AND winner != '' AND player1 != '' AND player2 != ''
+            AND player1 = winner
             ORDER BY date DESC
-        ''', conn)
+            LIMIT ?
+        ''', conn, params=(test_size,))
         conn.close()
 
-        if df_raw.empty:
+        if df.empty:
             print("❌ Pas de données pour le backtest")
             return {}
 
-        # Déduplication — Sackmann stocke chaque match dans les 2 sens
-        df_raw['match_key'] = df_raw.apply(
-            lambda r: r['date'] + '_' + '_'.join(sorted([r['player1'], r['player2']])),
-            axis=1
-        )
-        df = df_raw.drop_duplicates(subset=['match_key']).head(test_size)
-        print(f"   {len(df)} matchs uniques sélectionnés")
+        print(f"   {len(df)} matchs sélectionnés")
 
         correct = 0
         total = 0
@@ -60,6 +52,8 @@ class BacktesterAgent:
             try:
                 pred = agent.predict(
                     row['player1'], row['player2'], row['surface'],
+                    p1_rank=int(row['p1_rank'] or 100),
+                    p2_rank=int(row['p2_rank'] or 100),
                     date_limit=row['date']
                 )
                 if not pred or pred.get('status') == 'error':

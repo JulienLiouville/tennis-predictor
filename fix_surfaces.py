@@ -281,6 +281,18 @@ SURFACES = {
     'Suzhou challenger':'Hard',     # Chine, surface dure
     'Winnipeg challenger':'Hard',   # Canada, indoor hard
 
+    # CLAY - manquants récents
+    'Madrid':'Clay','Madrid WTA':'Clay',
+    'Rome':'Clay','Rome WTA':'Clay',
+    'Istanbul 2 WTA':'Clay','Saint-Malo WTA':'Clay',
+    'Brazzaville challenger':'Clay','Cagliari challenger':'Clay',
+    'Jiujiang challenger':'Clay','Mauthausen challenger':'Clay',
+    'Ostrava challenger':'Clay','Santos challenger':'Clay',
+
+    # HARD - manquants récents
+    'Jiujiang 2':'Hard','Huzhou':'Hard','Wuxi challenger':'Hard',
+    'Jiujiang':'Hard',
+
     # CLAY - manquants
     "Cap d'Agde ITF":'Clay',        # France, terre battue
     'Clemson ITF':'Clay',           # USA, terre battue (Clemson est sur clay)
@@ -304,8 +316,7 @@ SURFACES = {
     # GRASS - manquants
     'Halle':'Grass',                # ATP Halle, gazon (Wimbledon prep)
 
-    # GRASS
-    'Bad Homburg WTA':'Grass','Birmingham':'Grass','Birmingham challenger':'Grass',
+    # GRASS    'Bad Homburg WTA':'Grass','Birmingham':'Grass','Birmingham challenger':'Grass',
     'Eastbourne':'Grass','Hertogenbosch':'Grass','Ilkley WTA':'Grass',
     'Ilkley challenger':'Grass','Nottingham':'Grass',
     'Nottingham 3 challenger':'Grass','Nottingham 5 challenger':'Grass',
@@ -372,19 +383,19 @@ if __name__ == "__main__":
         updated = 0
         for name, surface in SURFACES.items():
             c.execute("""
-                INSERT INTO tournament_surfaces (name, surface)
-                VALUES (?, ?)
-                ON CONFLICT(name) DO UPDATE SET surface = excluded.surface
-            """, (name, surface))
+                INSERT INTO tournament_surfaces (tournament_key, tournament_name, surface)
+                VALUES (?, ?, ?)
+                ON CONFLICT(tournament_key) DO UPDATE SET surface = excluded.surface
+            """, (name, name, surface))
             updated += 1
 
-        c.execute("SELECT name FROM tournament_surfaces WHERE surface = 'Unknown'")
+        c.execute("SELECT tournament_key FROM tournament_surfaces WHERE surface = 'Unknown'")
         still_unknown = [r[0] for r in c.fetchall()]
         pattern_updated = 0
         for name in still_unknown:
             surface = apply_pattern(name)
             if surface:
-                c.execute("UPDATE tournament_surfaces SET surface = ? WHERE name = ?",
+                c.execute("UPDATE tournament_surfaces SET surface = ? WHERE tournament_key = ?",
                           (surface, name))
                 pattern_updated += 1
 
@@ -392,7 +403,7 @@ if __name__ == "__main__":
         print(f"✅ {updated} tournois mappés via dict.")
         print(f"✅ {pattern_updated} tournois mappés via patterns.")
 
-        c.execute("SELECT name FROM tournament_surfaces WHERE surface = 'Unknown' ORDER BY name")
+        c.execute("SELECT tournament_key FROM tournament_surfaces WHERE surface = 'Unknown' ORDER BY tournament_key")
         remaining = [r[0] for r in c.fetchall()]
         excluded_kw = ['utr','futures','davis','billie','united cup','exhibition',
                        'showdown','bundesliga','league','laver','hopman','kooyong',

@@ -17,6 +17,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 EXCLUDED_SUBSTRINGS = [
     'utr pro tennis',
     'utr pro match',
+    'utr pro',
     'ultimate tennis showdown',
     'billie jean king cup',
     'davis cup',
@@ -35,11 +36,13 @@ EXCLUDED_SUBSTRINGS = [
     'france - championship',
     'czech league',
     'boodles',
+    ' itf',   # ex: "Madrid 20 ITF", "Monastir 33 ITF"
 ]
 
 # Exclusions par pattern regex (case-insensitive)
 EXCLUDED_PATTERNS = [
-    re.compile(r'^futures \d{4}$', re.IGNORECASE),  # Futures 2024, 2025, 2026, ...
+    re.compile(r'^futures', re.IGNORECASE),        # Futures 2026, Futures XYZ
+    re.compile(r'\bitf\b', re.IGNORECASE),          # contient ITF n'importe où
 ]
 
 SURFACE_OVERRIDES = {
@@ -81,6 +84,7 @@ class MatchCollector:
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
         self._unknown_tournaments = set()
+        self._name_cache = {}  # cache {nom_abrégé_gender -> nom_complet}
         self._init_db()
         print("✅ MatchCollector initialisé")
 
@@ -117,8 +121,12 @@ class MatchCollector:
                 UNIQUE(date, player1, player2, tour)
             )''')
             c.execute('''CREATE TABLE IF NOT EXISTS tournament_surfaces (
-                name TEXT PRIMARY KEY,
-                surface TEXT
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tournament_key TEXT UNIQUE,
+                tournament_name TEXT,
+                surface TEXT,
+                source TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )''')
             conn.commit()
         finally:
@@ -211,15 +219,15 @@ class MatchCollector:
         conn = get_connection()
         try:
             c = conn.cursor()
-            c.execute('SELECT surface FROM tournament_surfaces WHERE name = ?',
+            c.execute('SELECT surface FROM tournament_surfaces WHERE tournament_key = ?',
                       (tournament,))
             row = c.fetchone()
             if row:
                 return row[0]
 
             # 3. Nouveau tournoi -> insere Unknown en DB
-            c.execute('INSERT OR IGNORE INTO tournament_surfaces (name, surface) VALUES (?, ?)',
-                      (tournament, 'Unknown'))
+            c.execute('INSERT OR IGNORE INTO tournament_surfaces (tournament_key, tournament_name, surface) VALUES (?, ?, ?)',
+                      (tournament, tournament, 'Unknown'))
             conn.commit()
             return 'Unknown'
         finally:
@@ -231,6 +239,48 @@ class MatchCollector:
         cleaned = re.sub(r'\s*\([^)]*\)', '', name)
         cleaned = re.sub(r'\s*\[\d+\]', '', cleaned)
         return cleaned.strip()
+
+    def _resolve_name(self, name_abbr: str, gender: str) -> str:
+        """
+        Résout un nom abrégé ("Sinner J.") vers le nom complet players_rankings
+        ("Sinner Jannik"). Retourne le nom original si non trouvé.
+        """
+        cache_key = f"{name_abbr}_{gender}"
+        if cache_key in self._name_cache:
+            return self._name_cache[cache_key]
+
+        parts = name_abbr.strip().split()
+        if not parts:
+            return name_abbr
+
+        # Noms composés : "Van De Zandschulp B." → "Van De Zandschulp"
+        if len(parts) > 1 and re.match(r'^[A-Z]{1,2}\.?$', parts[-1]):
+            last_name = ' '.join(parts[:-1])
+        else:
+            last_name = ' '.join(parts)
+
+        conn = get_connection()
+        try:
+            c = conn.cursor()
+            c.execute('''
+                SELECT name FROM players_rankings
+                WHERE name LIKE ? AND gender = ?
+                ORDER BY date_recorded DESC LIMIT 1
+            ''', (f'%{last_name}%', gender))
+            row = c.fetchone()
+            if not row:
+                c.execute('''
+                    SELECT name FROM players_rankings
+                    WHERE name LIKE ? AND gender = ?
+                    ORDER BY date_recorded DESC LIMIT 1
+                ''', (f'{parts[0]}%', gender))
+                row = c.fetchone()
+            resolved = row[0] if row else name_abbr
+        finally:
+            conn.close()
+
+        self._name_cache[cache_key] = resolved
+        return resolved
 
     def _parse_score(self, row_a, row_b) -> dict:
         """Parse le score avec tiebreaks propres : 7-6(3)"""
@@ -381,6 +431,10 @@ class MatchCollector:
                     if not p1_name or not p2_name:
                         continue
 
+                    # Résolution vers nom complet (format players_rankings)
+                    gender = config['gender']
+                    p1_name = self._resolve_name(p1_name, gender)
+                    p2_name = self._resolve_name(p2_name, gender)
                     winner = p1_name if 'bott' in classes else p2_name
                     score_data = self._parse_score(row, row_b)
                     if not score_data['is_valid']:
@@ -497,7 +551,7 @@ class MatchCollector:
         conn = get_connection()
         try:
             c = conn.cursor()
-            c.execute("SELECT name FROM tournament_surfaces WHERE surface = 'Unknown' ORDER BY name")
+            c.execute("SELECT tournament_key FROM tournament_surfaces WHERE surface = 'Unknown' ORDER BY tournament_key")
             unknowns = [row[0] for row in c.fetchall()]
         finally:
             conn.close()
@@ -629,6 +683,63 @@ class MatchCollector:
             save_csv=save_csv
         )
 
+    def migrate_names(self):
+        """
+        Migration one-shot : normalise les noms abrégés existants dans
+        matches_2026 et le CSV global vers le format players_rankings.
+        Idempotent : ne touche pas les noms déjà résolus.
+        """
+        print("🔄 Migration des noms dans matches_2026...")
+        conn = get_connection()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT id, player1, player2, winner, tour FROM matches_2026")
+            rows = c.fetchall()
+            updated = 0
+            for row_id, p1, p2, winner, tour in rows:
+                gender = 'F' if tour == 'WTA' else 'M'
+                p1_new = self._resolve_name(p1, gender)
+                p2_new = self._resolve_name(p2, gender)
+                winner_new = self._resolve_name(winner, gender)
+                if p1_new != p1 or p2_new != p2 or winner_new != winner:
+                    try:
+                        c.execute('''
+                            UPDATE matches_2026
+                            SET player1=?, player2=?, winner=?
+                            WHERE id=?
+                        ''', (p1_new, p2_new, winner_new, row_id))
+                        updated += 1
+                    except Exception:
+                        # Doublon après résolution → supprime la ligne en double
+                        c.execute('DELETE FROM matches_2026 WHERE id=?', (row_id,))
+                        updated += 1
+            conn.commit()
+            print(f"   ✅ {updated}/{len(rows)} lignes mises à jour en DB")
+        finally:
+            conn.close()
+
+        # Mise à jour du CSV global
+        global_csv = f"{self.output_dir}/tennis_global_atp_wta.csv"
+        if not os.path.exists(global_csv):
+            print("⚠️  CSV global introuvable — migration DB uniquement")
+            return
+
+        print("🔄 Migration des noms dans le CSV global...")
+        df = pd.read_csv(global_csv)
+        csv_updated = 0
+        for i, row in df.iterrows():
+            gender = 'F' if row['tour'] == 'WTA' else 'M'
+            p1_new = self._resolve_name(str(row['player1']), gender)
+            p2_new = self._resolve_name(str(row['player2']), gender)
+            w_new  = self._resolve_name(str(row['winner']), gender)
+            if p1_new != row['player1'] or p2_new != row['player2'] or w_new != row['winner']:
+                df.at[i, 'player1'] = p1_new
+                df.at[i, 'player2'] = p2_new
+                df.at[i, 'winner']  = w_new
+                csv_updated += 1
+        df.to_csv(global_csv, index=False, encoding='utf-8')
+        print(f"   ✅ {csv_updated}/{len(df)} lignes mises à jour dans le CSV")
+
     def collect_yesterday(self, tours: list = None) -> list:
         """Job quotidien : collecte la veille et met a jour le CSV global"""
         if tours is None:
@@ -663,20 +774,47 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 1:
         cmd = sys.argv[1]
+
         if cmd == "yesterday":
-            # Job quotidien : collecte la veille
             collector.collect_yesterday()
+
         elif cmd == "range" and len(sys.argv) == 4:
-            # Plage : py match_collector.py range 2025-01-01 2025-12-31
             collector.collect_range(sys.argv[2], sys.argv[3])
+
         elif cmd == "month" and len(sys.argv) == 4:
-            # Mois : py match_collector.py month 2025 1
             collector.collect_month(int(sys.argv[2]), int(sys.argv[3]))
+
+        elif cmd == "migrate":
+            # Migration one-shot : normalise les noms abrégés dans matches_2026 et le CSV
+            collector.migrate_names()
+
         else:
             print("Usage:")
+            print("  py match_collector.py                        # delta auto depuis CSV")
             print("  py match_collector.py yesterday")
             print("  py match_collector.py range 2025-01-01 2025-12-31")
             print("  py match_collector.py month 2025 4")
+            print("  py match_collector.py migrate                # normalise noms existants")
+
     else:
-        # Par défaut : collecte la veille
-        collector.collect_yesterday()
+        # Par défaut : détecte la date max du CSV global et scrape le delta
+        global_csv = f"{collector.output_dir}/tennis_global_atp_wta.csv"
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        if os.path.exists(global_csv):
+            df_existing = pd.read_csv(global_csv)
+            if not df_existing.empty and 'date' in df_existing.columns:
+                max_date = df_existing['date'].max()
+                # Démarre au lendemain de la dernière date connue
+                start = (datetime.strptime(max_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+                if start > today:
+                    print(f"✅ CSV déjà à jour (dernière date : {max_date})")
+                else:
+                    print(f"📅 Delta détecté : {start} → {today}")
+                    collector.collect_range(start, today)
+            else:
+                print("⚠️  CSV vide — collecte complète depuis 2025-01-01")
+                collector.collect_range("2025-01-01", today)
+        else:
+            print("⚠️  CSV introuvable — collecte complète depuis 2025-01-01")
+            collector.collect_range("2025-01-01", today)

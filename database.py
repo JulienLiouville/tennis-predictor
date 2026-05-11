@@ -27,9 +27,9 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
 
-        c.execute('CREATE INDEX IF NOT EXISTS idx_matches_date ON matches(date)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_matches_player1 ON matches(player1)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_matches_player2 ON matches(player2)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_matches_date     ON matches(date)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_matches_player1  ON matches(player1)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_matches_player2  ON matches(player2)')
 
         c.execute('''CREATE TABLE IF NOT EXISTS matches_2026 (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +45,7 @@ def init_db():
             UNIQUE(date, player1, player2, tour)
         )''')
 
-        c.execute('CREATE INDEX IF NOT EXISTS idx_m26_date ON matches_2026(date)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_m26_date    ON matches_2026(date)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_m26_player1 ON matches_2026(player1)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_m26_player2 ON matches_2026(player2)')
 
@@ -64,11 +64,13 @@ def init_db():
             date TEXT, tournament TEXT, surface TEXT,
             player1 TEXT, player2 TEXT,
             predicted_winner TEXT, confidence REAL,
+            p1_rank INTEGER, p2_rank INTEGER,
             p1_elo REAL, p2_elo REAL,
             p1_elo_surface REAL, p2_elo_surface REAL,
             p1_momentum REAL, p2_momentum REAL,
             h2h_p1_wins INTEGER, h2h_p2_wins INTEGER,
-            actual_winner TEXT, correct INTEGER,
+            actual_winner TEXT, correct INTEGER,odds_p1 REAL,
+            odds_p2 REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
 
@@ -76,9 +78,9 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             player TEXT UNIQUE,
             elo_global REAL DEFAULT 1500,
-            elo_hard REAL DEFAULT 1500,
-            elo_clay REAL DEFAULT 1500,
-            elo_grass REAL DEFAULT 1500,
+            elo_hard   REAL DEFAULT 1500,
+            elo_clay   REAL DEFAULT 1500,
+            elo_grass  REAL DEFAULT 1500,
             matches_played INTEGER DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
@@ -98,6 +100,22 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
 
+        # ── Table des features pré-calculées ──────────────────────────────────
+        # Peuplée par precompute_features.py (one-shot local).
+        # Jointe dans predictor._load_sackmann() pour un train() rapide.
+        c.execute('''CREATE TABLE IF NOT EXISTS match_features (
+            match_id         INTEGER PRIMARY KEY,
+            p1_momentum_l5   REAL,
+            p1_momentum_l10  REAL,
+            p2_momentum_l5   REAL,
+            p2_momentum_l10  REAL,
+            h2h_p1_ratio     REAL,
+            h2h_total        INTEGER,
+            p1_fatigue_7d    INTEGER,
+            p2_fatigue_7d    INTEGER,
+            computed_at      TEXT
+        )''')
+
         _run_migrations(c)
         conn.commit()
         print("✅ Base de données initialisée et synchronisée")
@@ -106,7 +124,9 @@ def init_db():
 
 
 def _run_migrations(c):
+    """Ajoute les colonnes manquantes sur les DB existantes."""
     new_columns = [
+        # matches
         ("matches", "tourney_level", "TEXT"),
         ("matches", "round", "TEXT"),
         ("matches", "best_of", "INTEGER"),
@@ -138,7 +158,10 @@ def _run_migrations(c):
         ("matches", "p2_SvGms", "INTEGER"),
         ("matches", "p2_bpSaved", "INTEGER"),
         ("matches", "p2_bpFaced", "INTEGER"),
+        # predictions
         ("predictions", "surface", "TEXT"),
+        ("predictions", "p1_rank", "INTEGER"),
+        ("predictions", "p2_rank", "INTEGER"),
         ("predictions", "p1_elo", "REAL"),
         ("predictions", "p2_elo", "REAL"),
         ("predictions", "p1_elo_surface", "REAL"),
@@ -147,12 +170,15 @@ def _run_migrations(c):
         ("predictions", "p2_momentum", "REAL"),
         ("predictions", "h2h_p1_wins", "INTEGER"),
         ("predictions", "h2h_p2_wins", "INTEGER"),
+        ("predictions", "odds_p1", "REAL"),
+        ("predictions", "odds_p2", "REAL"),
+        ("predictions", "tournament", "TEXT"),
     ]
     for table, col, col_type in new_columns:
         try:
             c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
-            pass
+            pass  # colonne déjà existante
 
 
 def get_connection():
