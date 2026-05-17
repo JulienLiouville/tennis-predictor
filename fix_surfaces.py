@@ -293,6 +293,21 @@ SURFACES = {
     'Jiujiang 2':'Hard','Huzhou':'Hard','Wuxi challenger':'Hard',
     'Jiujiang':'Hard',
 
+    # Ajouts 2026
+    'Bangalore 2 challenger':'Hard','Bangalore 3 challenger':'Hard',
+    'Bastad ITF':'Clay',
+    'Bethany Beach ITF':'Hard',
+    'Hurghada 5 ITF':'Hard',
+    'Klagenfurt ITF':'Clay',
+    'Monzon ITF':'Clay',
+    'Nakhon Pathom 3 ITF':'Hard',
+    'Tsaghkadzor ITF':'Clay',
+    'Tunis challenger':'Clay',
+    'Valencie challenger':'Clay',
+    'Warmbad-Villach ITF':'Clay',
+    'Zagreb ITF':'Clay',
+    'Zagreb challenger':'Clay',
+
     # CLAY - manquants
     "Cap d'Agde ITF":'Clay',        # France, terre battue
     'Clemson ITF':'Clay',           # USA, terre battue (Clemson est sur clay)
