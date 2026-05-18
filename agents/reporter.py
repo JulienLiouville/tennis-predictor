@@ -15,7 +15,7 @@ class ReporterAgent:
         print("✅ ReporterAgent initialisé")
 
     def get_todays_predictions(self) -> list:
-        """Récupère les prédictions du jour > 80% confiance"""
+        """Récupère le top 10 prédictions du jour >= 65% confiance"""
         conn = get_connection()
         c = conn.cursor()
         today = datetime.now().strftime('%Y-%m-%d')
@@ -25,7 +25,7 @@ class ReporterAgent:
             FROM predictions
             WHERE date = ? AND confidence >= 0.65
             ORDER BY confidence DESC
-            LIMIT 5
+            LIMIT 10
         """, (today,))
         rows = c.fetchall()
         conn.close()
@@ -41,6 +41,7 @@ class ReporterAgent:
                    actual_winner, confidence, correct
             FROM predictions
             WHERE date = ? AND actual_winner IS NOT NULL
+            ORDER BY confidence DESC
         """, (yesterday,))
         rows = c.fetchall()
         conn.close()
@@ -74,30 +75,31 @@ class ReporterAgent:
         if predictions:
             for p in predictions:
                 player1, player2, winner, conf, surface = p
-                emoji = "🎾"
                 pred_html += f"""
                 <tr>
-                    <td>{emoji} {player1} vs {player2}</td>
+                    <td>🎾 {player1} vs {player2}</td>
                     <td><b>{winner}</b></td>
                     <td>{surface}</td>
                     <td><b>{conf:.0%}</b></td>
                 </tr>"""
         else:
-            pred_html = "<tr><td colspan='4'>Aucune prédiction > 80% aujourd'hui</td></tr>"
+            pred_html = "<tr><td colspan='4'>Aucune prédiction ≥ 65% aujourd'hui</td></tr>"
 
         # Section résultats hier
         results_html = ""
         if yesterday:
             correct = sum(1 for r in yesterday if r[5] == 1)
             total = len(yesterday)
-            results_html = f"<p>✅ {correct}/{total} prédictions correctes hier</p>"
+            rate = correct / total if total > 0 else 0
+            results_html = f"<p><b>{correct}/{total} prédictions correctes hier ({rate:.0%})</b></p>"
             for r in yesterday:
                 player1, player2, predicted, actual, conf, correct_bet = r
                 icon = "✅" if correct_bet else "❌"
                 results_html += f"""
-                <p>{icon} {player1} vs {player2} 
-                → Prédit: <b>{predicted}</b> 
-                | Réel: <b>{actual}</b></p>"""
+                <p>{icon} {player1} vs {player2}
+                → Prédit : <b>{predicted}</b>
+                | Réel : <b>{actual}</b>
+                | Confiance : {conf:.0%}</p>"""
         else:
             results_html = "<p>Pas de résultats à afficher pour hier</p>"
 
@@ -109,7 +111,7 @@ class ReporterAgent:
             <p>Taux de réussite : <b>{perf['success_rate']:.2%}</b>
             sur {perf['total_predictions']} prédictions</p>
 
-            <h2>🎯 Prédictions du jour (confiance > 80%)</h2>
+            <h2>🎯 Top 10 prédictions du jour (confiance ≥ 65%)</h2>
             <table border="1" cellpadding="8" cellspacing="0" width="100%">
                 <tr style="background:#f0f0f0">
                     <th>Match</th>
@@ -120,7 +122,7 @@ class ReporterAgent:
                 {pred_html}
             </table>
 
-            <h2>📈 Résultats d'hier</h2>
+            <h2>📈 Résultats des prédictions d'hier</h2>
             {results_html}
 
             <hr>

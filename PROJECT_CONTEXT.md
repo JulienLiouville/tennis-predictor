@@ -1,266 +1,114 @@
-🎾 Tennis Predictor — Updated Project Status (May 2026)
-Current Global State
+# 🎾 Tennis Predictor — Project Context
 
-The project has moved from:
+## Overview
 
-"broken prototype pipeline"
+Tennis Predictor est une plateforme multi-agents de machine learning pour la prédiction de matchs ATP/WTA.
 
-to:
+**Goal :**
+- collecter les matchs tennis (historique + quotidien)
+- calculer des features temporelles (momentum, H2H, fatigue)
+- entraîner des modèles prédictifs
+- générer des prédictions de paris
+- détecter à terme les inefficacités de pricing des bookmakers
 
-"statistical validation and ML reliability phase"
-
-The architecture is now considered:
-
-modular,
-scalable,
-maintainable,
-suitable for future MLOps evolution.
-✅ Major Fixes Successfully Completed
-1. Surface Normalization Fixed
-
-Previous state:
-
-444k+ matches had NULL/Unknown surfaces.
-
-Current state:
-
-surfaces correctly normalized,
-realistic distribution:
-Clay,
-Hard,
-Grass.
-
-Impact:
-
-recent dataset is now usable,
-surface feature becomes statistically meaningful.
-2. Duplicate Matches Fixed
-
-Previous state:
-
-massive duplicate corruption in matches_2026.
-
-Current state:
-
-duplicate validation passes successfully.
-
-Impact:
-
-cleaner training dataset,
-reduced statistical pollution,
-more trustworthy backtesting.
-3. Feature Generation Fixed
-
-Current state:
-
-match_features now contains 380k+ rows.
-
-Observed feature quality:
-
-Feature	Status
-momentum_l5	healthy variance
-momentum_l10	healthy variance
-fatigue_7d	realistic distribution
-H2H ratio	sparse / fallback-heavy
-
-Impact:
-
-project now uses real engineered features instead of fallback defaults.
-4. Validation Infrastructure Added
-
-A complete validation script now exists:
-
-quick.py
-
-Purpose:
-
-healthcheck system,
-database integrity validation,
-feature sanity checks,
-leakage detection,
-pipeline verification.
-
-This script is now considered a core project component.
-
-⚠️ Current Known Weaknesses
-1. Winner / Target Integrity Investigation
-
-Current critical issue:
-
-ValueError: y contains 1 class
-
-Possible causes:
-
-corrupted winner column,
-player1 always stored as winner,
-invalid target generation.
-
-This is currently the highest-priority validation task.
-
-Required SQL validation:
-
-SELECT
-    COUNT(*) as total,
-    SUM(CASE WHEN player1 = winner THEN 1 ELSE 0 END) as p1_wins,
-    SUM(CASE WHEN player2 = winner THEN 1 ELSE 0 END) as p2_wins
-FROM matches_2026
-WHERE winner IS NOT NULL;
-
-Expected:
-
-roughly balanced p1/p2 win distribution.
-2. Missing Rankings
-
-Current state:
-
-~30k matches missing rankings.
-
-Likely causes:
-
-juniors,
-ITF players,
-qualifiers,
-unranked players,
-incomplete name normalization.
-
-Recommended strategy:
-
-keep rows,
-add explicit is_unranked features.
-3. Player Name Normalization
-
-Current issue:
-
-abbreviated names still exist.
-
-Examples:
-
-Aahan A.
-Abendroth I.
-
-Impact:
-
-H2H corruption,
-ranking matching failures,
-fatigue inaccuracies.
-
-Priority:
-
-medium.
-4. H2H Feature Quality
-
-Observation:
-
-H2H ratio still falls back to 0.5 too often.
-
-Interpretation:
-
-sparse historical meetings,
-limited signal quality.
-
-Potential future actions:
-
-reduce feature importance,
-improve H2H matching,
-confidence weighting.
-🧠 Current ML Interpretation
-
-The system is no longer:
-
-ranking-only baseline
-
-because:
-
-engineered features now exist,
-momentum distributions look healthy,
-fatigue distributions appear realistic.
-
-However:
-
-the model reliability is NOT yet validated.
-
-Current project phase:
-
-scientific validation phase
-
-not:
-
-profit optimization phase
-🎯 Immediate Next Step (Highest Priority)
-Validate Target Integrity
-
-This is the direct next step.
-
-Goal:
-
-verify that the target variable is statistically correct.
-
-Why this matters:
-
-all ML training depends entirely on target integrity.
-
-If corrupted:
-
-all training results become invalid,
-accuracy becomes meaningless,
-backtesting becomes fake.
-Required Actions
-Step 1
-
-Run the validation SQL query.
-
-Step 2
-
-Verify:
-
-player1 wins,
-player2 wins,
-overall balance.
-Step 3
-
-Trace winner creation pipeline:
-
-Files to inspect:
-
-collect_2026.py
-collector.py
-live_collector.py
-database.py
-Step 4
-
-Fix any corruption before retraining.
-
-🚀 After Target Validation
-
-Only after target integrity is confirmed:
-
-Phase 1
-temporal split validation,
-calibration,
-feature importance.
-Phase 2
-bookmaker implied probabilities,
-ROI tracking,
-EV calculation.
-Phase 3
-model versioning,
-drift monitoring,
-failure analysis,
-controlled retraining.
-📌 Current Strategic Priority
-
-The project should now focus on:
-
-statistical correctness
-
-NOT:
-
-adding more features
-
-The most important objective is now:
-
-prove the system is scientifically reliable
-
-before attempting:
-
-real betting profitability
+**Long-term vision :**
+- système autonome de betting intelligence
+- potentiel Discord premium
+- expansion multi-sport
+
+---
+
+## Current Stack
+
+- Python 3.10+
+- SQLite
+- scikit-learn (GradientBoostingClassifier)
+- BeautifulSoup (scraping TennisExplorer)
+- schedule + Gmail SMTP
+- Google Cloud VM e2-micro (production)
+
+---
+
+## Core Architecture
+
+```
+Sackmann CSV (2015-2024)
+    ↓ collector.py
+    → matches
+
+TennisExplorer scraping
+    ↓ match_collector.py
+    → matches_2026 + CSV global
+
+matches + matches_2026
+    ↓ precompute_features.py
+    → match_features
+
+match_features
+    ↓ predictor.py (train)
+    → model.pkl
+
+The Odds API
+    ↓ live_collector.py
+    → predictions (matchs du jour)
+
+predictions
+    ↓ predictor.py (inference)
+    → predictions (avec predicted_winner)
+    ↓ reporter.py
+    → Email quotidien 08h30
+```
+
+---
+
+## Main Agents
+
+| Agent | Rôle |
+|---|---|
+| `collector.py` | Collecte historique Sackmann 2015-2024 |
+| `match_collector.py` | Scraping TennisExplorer quotidien + CSV global |
+| `live_collector.py` | Scraping The Odds API (matchs + cotes du jour) |
+| `predictor.py` | Entraînement ML + inférence |
+| `backtester.py` | Évaluation historique |
+| `reporter.py` | Génération email quotidien |
+| `orchestrator.py` | Orchestration pipeline |
+| `qa_engineer.py` | Validation pipeline |
+| `precompute_features.py` | Précalcul features (opération manuelle) |
+
+---
+
+## Scheduler (prod)
+
+| Heure | Job |
+|---|---|
+| 08h30 quotidien | `daily_job` : collecte + prédictions + email |
+| Dimanche 02h00 | `retrain_weekly` : reload CSV + réentraînement |
+
+---
+
+## Current ML Strategy
+
+**Focus actuel :**
+- précision et robustesse
+- prévention des leakages
+- calibration des probabilités (pending)
+
+**Pas encore :**
+- optimisation ROI
+- Kelly betting
+- live betting
+- bankroll management
+
+---
+
+## NON-NEGOTIABLE RULES
+
+- NEVER use future data
+- ALWAYS use temporal validation (pas random_state=42 en prod)
+- NEVER trust raw probabilities without calibration
+- NEVER delete tennis.db in production
+- ALWAYS prevent train/test leakage
+- ALWAYS verify rankings date consistency
+- ALWAYS run surface normalization before training
+- NEVER use post-match information in features
+- `precompute_features.py` tourne en LOCAL uniquement (RAM e2-micro insuffisante)

@@ -2,7 +2,7 @@ import schedule
 import time
 import csv
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from database import init_db, get_connection
 from agents.collector import CollectorAgent
 from agents.predictor import PredictorAgent
@@ -101,6 +101,60 @@ class OrchestratorAgent:
         print(f"✅ CSV chargé : {inserted} insérés, {skipped} déjà présents")
         return inserted
 
+    # ─── RÉCONCILIATION J-1 ───────────────────────────────────────────────────
+
+    def reconcile_yesterday(self):
+        """
+        Remplit actual_winner + correct dans predictions pour J-1.
+        Appelé après collect_yesterday() pour que matches_2026 soit à jour.
+        Match par (date, player1, player2) — ordre des joueurs indifférent.
+        """
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+
+        conn = get_connection()
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT id, player1, player2, predicted_winner
+            FROM predictions
+            WHERE date = ? AND actual_winner IS NULL
+        """, (yesterday,))
+        pending = c.fetchall()
+
+        if not pending:
+            print(f"ℹ️  Réconciliation J-1 ({yesterday}) : aucune prédiction en attente")
+            conn.close()
+            return
+
+        updated = 0
+        not_found = 0
+
+        for pred_id, player1, player2, predicted_winner in pending:
+            c.execute("""
+                SELECT winner FROM matches_2026
+                WHERE date = ?
+                  AND ((player1 = ? AND player2 = ?)
+                    OR (player1 = ? AND player2 = ?))
+                LIMIT 1
+            """, (yesterday, player1, player2, player2, player1))
+            row = c.fetchone()
+
+            if row:
+                actual = row[0]
+                correct = 1 if actual == predicted_winner else 0
+                c.execute("""
+                    UPDATE predictions
+                    SET actual_winner = ?, correct = ?
+                    WHERE id = ?
+                """, (actual, correct, pred_id))
+                updated += 1
+            else:
+                not_found += 1
+
+        conn.commit()
+        conn.close()
+        print(f"✅ Réconciliation J-1 ({yesterday}) : {updated} mises à jour, {not_found} matchs introuvables")
+
     # ─── SETUP ────────────────────────────────────────────────────────────────
 
     def setup(self):
@@ -153,24 +207,27 @@ class OrchestratorAgent:
         print(f"📅 JOB QUOTIDIEN - {datetime.now().strftime('%d/%m/%Y %H:%M')}")
         print("="*50)
 
-        # 1. Collecte matchs du jour via The Odds API
+        # 1. Collecte cotes du jour via The Odds API
         from agents.live_collector import LiveCollectorAgent
         live_collector = LiveCollectorAgent()
         live_collector.run()
 
-        # 2. Collecte matchs hier via tennisexplorer → matches_2026 + CSV
+        # 2. Collecte matchs d'hier via TennisExplorer → matches_2026 + CSV
         from match_collector import MatchCollector
         collector = MatchCollector()
         collector.collect_yesterday()
 
-        # 3. Prédictions
+        # 3. Réconciliation prédictions J-1 ↔ résultats réels
+        self.reconcile_yesterday()
+
+        # 4. Calcul des prédictions du jour (matchs pending)
         self.predictor.load_model()
         self.predictor.process_pending_predictions()
 
-        # 4. QA rapide
+        # 5. QA rapide
         qa_report = self.qa.run()
 
-        # 5. Rapport mail
+        # 6. Envoi email si QA ok
         if qa_report['validated']:
             self.reporter.run()
             print("✅ Job quotidien terminé avec succès !")
