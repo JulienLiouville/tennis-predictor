@@ -69,8 +69,9 @@ def init_db():
             p1_elo_surface REAL, p2_elo_surface REAL,
             p1_momentum REAL, p2_momentum REAL,
             h2h_p1_wins INTEGER, h2h_p2_wins INTEGER,
-            actual_winner TEXT, correct INTEGER,odds_p1 REAL,
-            odds_p2 REAL,
+            actual_winner TEXT, correct INTEGER,
+            odds_p1 REAL, odds_p2 REAL,
+            sent_in_email INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
 
@@ -100,9 +101,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
 
-        # ── Table des features pré-calculées ──────────────────────────────────
-        # Peuplée par precompute_features.py (one-shot local).
-        # Jointe dans predictor._load_sackmann() pour un train() rapide.
         c.execute('''CREATE TABLE IF NOT EXISTS match_features (
             match_id         INTEGER PRIMARY KEY,
             p1_momentum_l5   REAL,
@@ -139,7 +137,6 @@ def _run_migrations(c):
         ("matches", "p1_hand", "TEXT"),
         ("matches", "p2_hand", "TEXT"),
         ("matches", "p1_height", "INTEGER"),
-        ("matches", "p2_height", "INTEGER"),
         ("matches", "p1_ace", "INTEGER"),
         ("matches", "p1_df", "INTEGER"),
         ("matches", "p1_svpt", "INTEGER"),
@@ -173,6 +170,7 @@ def _run_migrations(c):
         ("predictions", "odds_p1", "REAL"),
         ("predictions", "odds_p2", "REAL"),
         ("predictions", "tournament", "TEXT"),
+        ("predictions", "sent_in_email", "INTEGER DEFAULT 0"),
     ]
     for table, col, col_type in new_columns:
         try:

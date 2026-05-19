@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from database import get_connection
 from config import EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECEIVER
 
+
 class ReporterAgent:
     """
     Agent reporter : génère et envoie le mail
@@ -15,12 +16,16 @@ class ReporterAgent:
         print("✅ ReporterAgent initialisé")
 
     def get_todays_predictions(self) -> list:
-        """Récupère le top 10 prédictions du jour >= 65% confiance"""
+        """
+        Récupère le top 10 prédictions du jour >= 65% confiance
+        et les marque sent_in_email = 1.
+        """
         conn = get_connection()
         c = conn.cursor()
         today = datetime.now().strftime('%Y-%m-%d')
+
         c.execute("""
-            SELECT player1, player2, predicted_winner,
+            SELECT id, player1, player2, predicted_winner,
                    confidence, surface
             FROM predictions
             WHERE date = ? AND confidence >= 0.65
@@ -28,19 +33,36 @@ class ReporterAgent:
             LIMIT 10
         """, (today,))
         rows = c.fetchall()
+
+        if rows:
+            ids = [r[0] for r in rows]
+            placeholders = ','.join('?' * len(ids))
+            c.execute(
+                f"UPDATE predictions SET sent_in_email = 1 WHERE id IN ({placeholders})",
+                ids
+            )
+            conn.commit()
+
         conn.close()
-        return rows
+        # Retourne sans la colonne id
+        return [(r[1], r[2], r[3], r[4], r[5]) for r in rows]
 
     def get_yesterday_results(self) -> list:
-        """Récupère les résultats des prédictions de la veille"""
+        """
+        Récupère les résultats des prédictions envoyées hier (sent_in_email = 1)
+        après réconciliation.
+        """
         conn = get_connection()
         c = conn.cursor()
         yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+
         c.execute("""
             SELECT player1, player2, predicted_winner,
                    actual_winner, confidence, correct
             FROM predictions
-            WHERE date = ? AND actual_winner IS NOT NULL
+            WHERE date = ?
+              AND sent_in_email = 1
+              AND actual_winner IS NOT NULL
             ORDER BY confidence DESC
         """, (yesterday,))
         rows = c.fetchall()
