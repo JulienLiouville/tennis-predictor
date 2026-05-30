@@ -1,53 +1,186 @@
 import re
+import asyncio
+import random
 import requests
 import urllib3
 from datetime import datetime
+from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 from database import get_connection
 from config import ODDS_API_KEY, ODDS_SPORT, ODDS_REGION, ODDS_MARKET
+from name_matcher import make_match_key, extract_last_name
 
 urllib3.disable_warnings()
 
 EXCLUDED_TOURS = {'itf', 'utr', 'futures'}
 
 
+class OddsPortalTennisScraper:
+    """Scraper OddsPortal pour cotes tennis (aujourd'hui + demain)."""
+
+    def __init__(self):
+        self.user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
+        self.endpoints = {
+            "today": "https://www.oddsportal.com/matches/tennis/today/",
+            "tomorrow": "https://www.oddsportal.com/matches/tennis/tomorrow/",
+        }
+
+    def _parse_html_frame(self, html_content: str) -> list:
+        """Extrait les matchs depuis le HTML OddsPortal."""
+        soup = BeautifulSoup(html_content, "html.parser")
+        extracted = []
+
+        match_rows = soup.find_all(
+            "div", class_="group flex", attrs={"data-testid": "game-row"}
+        )
+
+        for row in match_rows:
+            try:
+                player_elements = row.find_all("p", class_="participant-name")
+                if len(player_elements) < 2:
+                    continue
+                p1 = player_elements[0].get_text(strip=True)
+                p2 = player_elements[1].get_text(strip=True)
+
+                odds_elements = row.find_all(
+                    "p", {"data-testid": "odd-container-default"}
+                )
+                odds_p1 = None
+                odds_p2 = None
+                if len(odds_elements) > 0:
+                    try:
+                        odds_p1 = float(odds_elements[0].get_text(strip=True))
+                    except:
+                        pass
+                if len(odds_elements) > 1:
+                    try:
+                        odds_p2 = float(odds_elements[1].get_text(strip=True))
+                    except:
+                        pass
+
+                extracted.append({
+                    "player1": p1,
+                    "player2": p2,
+                    "odds_p1": odds_p1,
+                    "odds_p2": odds_p2,
+                })
+            except Exception:
+                continue
+
+        return extracted
+
+    async def _scrape_single_url(self, page_instance, url: str) -> list:
+        """Scrape une URL OddsPortal avec scroll humain."""
+        matches_dict = {}
+
+        print(f"  🌍 Scraping {url}")
+        try:
+            await page_instance.goto(url, wait_until="networkidle", timeout=60000)
+            await page_instance.wait_for_selector(
+                "div[data-testid='game-row']", timeout=15000
+            )
+        except Exception as e:
+            print(f"  ⚠️  Erreur navigation OddsPortal: {e}")
+            return []
+
+        current_scroll = 0
+        total_height = await page_instance.evaluate("document.body.scrollHeight")
+        loop_count = 0
+
+        while current_scroll < total_height:
+            step = random.randint(300, 500)
+            current_scroll += step
+            await page_instance.evaluate(f"window.scrollTo(0, {current_scroll});")
+            await page_instance.mouse.move(
+                random.randint(400, 800), random.randint(300, 600)
+            )
+
+            loop_count += 1
+            if loop_count % 5 == 0:
+                current_scroll -= 150
+                await page_instance.evaluate(
+                    f"window.scrollTo(0, {current_scroll});"
+                )
+                await asyncio.sleep(2.0)
+                current_scroll += 150
+            else:
+                await asyncio.sleep(random.uniform(0.5, 0.8))
+
+            html_content = await page_instance.content()
+            visible_matches = self._parse_html_frame(html_content)
+
+            for m in visible_matches:
+                match_key = f"{m['player1']} vs {m['player2']}"
+                if match_key not in matches_dict:
+                    matches_dict[match_key] = m
+
+            total_height = await page_instance.evaluate(
+                "document.body.scrollHeight"
+            )
+
+        return list(matches_dict.values())
+
+    async def run(self) -> dict:
+        """Scrape OddsPortal pour aujourd'hui et demain, retourne {match_key: cotes}."""
+        global_matches = {}
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 900},
+                user_agent=self.user_agent,
+            )
+            page = await context.new_page()
+
+            for label, url in self.endpoints.items():
+                print(f"📥 OddsPortal - {label}...")
+                page_matches = await self._scrape_single_url(page, url)
+
+                for m in page_matches:
+                    key = make_match_key(m['player1'], m['player2'])
+                    if key not in global_matches:
+                        global_matches[key] = {
+                            'player1': m['player1'],
+                            'player2': m['player2'],
+                            'odds_p1': m['odds_p1'],
+                            'odds_p2': m['odds_p2'],
+                        }
+
+                await asyncio.sleep(random.uniform(2.0, 4.0))
+
+            await browser.close()
+
+        print(f"   ✅ {len(global_matches)} matchs OddsPortal")
+        return global_matches
+
+
 class LiveCollectorAgent:
     def __init__(self):
         self.base_url = "https://api.the-odds-api.com/v4"
-        self.te_base  = "https://www.tennisexplorer.com"
-        self.headers  = {
+        self.te_base = "https://www.tennisexplorer.com"
+        self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
                           "Chrome/120.0.0.0 Safari/537.36"
         }
-        self._name_cache = {}  # cache {nom_abrégé -> nom_complet}
+        self._name_cache = {}
+        self.oddsportal_scraper = OddsPortalTennisScraper()
         print("✅ LiveCollectorAgent initialisé")
 
     # ─── RÉSOLUTION DES NOMS ──────────────────────────────────────────────────
 
     def _resolve_player_name(self, name_abbr: str, gender: str) -> str:
-        """
-        Résout un nom abrégé tennisexplorer ("Hurkacz H.") vers le nom complet
-        dans players_rankings ("Hurkacz Hubert").
-
-        Stratégie :
-          1. Extrait le nom de famille (tout avant le dernier espace)
-          2. Cherche dans players_rankings avec LIKE '%nom_famille%' + gender
-          3. Retourne le nom complet si trouvé, sinon le nom abrégé original
-
-        Format players_rankings : "Sinner Jannik" (famille + prénom)
-        Format tennisexplorer   : "Sinner J." (famille + initiale)
-        """
         cache_key = f"{name_abbr}_{gender}"
         if cache_key in self._name_cache:
             return self._name_cache[cache_key]
 
-        # Extrait le nom de famille : "Hurkacz H." → "Hurkacz"
         parts = name_abbr.strip().split()
         if not parts:
             return name_abbr
 
-        # Gère les noms composés : "Van De Zandschulp B." → cherche "Van De Zandschulp"
-        # On enlève la dernière partie si elle ressemble à une initiale (1-2 chars + point)
         if len(parts) > 1 and re.match(r'^[A-Z]{1,2}\.?$', parts[-1]):
             last_name = ' '.join(parts[:-1])
         else:
@@ -66,7 +199,6 @@ class LiveCollectorAgent:
             if row:
                 resolved = row[0]
             else:
-                # Fallback : essaie juste le premier mot (nom de famille simple)
                 first_word = parts[0]
                 c.execute('''
                     SELECT name FROM players_rankings
@@ -83,10 +215,6 @@ class LiveCollectorAgent:
         return resolved
 
     def _resolve_match_names(self, matches: list) -> list:
-        """
-        Résout tous les noms abrégés vers les noms complets.
-        Met à jour player1/player2 in-place.
-        """
         print("🔍 Résolution des noms de joueurs...")
         resolved = 0
         for m in matches:
@@ -96,7 +224,7 @@ class LiveCollectorAgent:
             p2_resolved = self._resolve_player_name(m['player2'], gender)
 
             if p1_resolved != m['player1']:
-                m['player1_abbr'] = m['player1']  # garde l'original pour debug
+                m['player1_abbr'] = m['player1']
                 m['player1'] = p1_resolved
                 resolved += 1
             if p2_resolved != m['player2']:
@@ -107,15 +235,30 @@ class LiveCollectorAgent:
         print(f"   {resolved} noms résolus sur {len(matches) * 2} joueurs")
         return matches
 
+    # ─── DÉDUPLICATION ────────────────────────────────────────────────────────
+
+    def _deduplicate_matches(self, matches: list) -> list:
+        seen = set()
+        result = []
+        for m in matches:
+            key = frozenset([m['player1'], m['player2']])
+            if key not in seen:
+                seen.add(key)
+                result.append(m)
+        removed = len(matches) - len(result)
+        if removed:
+            print(f"   {removed} doublon(s) sens inversé supprimé(s)")
+        return result
+
     # ─── TENNISEXPLORER ───────────────────────────────────────────────────────
 
     def get_todays_matches_te(self) -> list:
         from bs4 import BeautifulSoup
 
-        now   = datetime.now()
+        now = datetime.now()
         today = now.strftime('%Y-%m-%d')
-        url   = (f"{self.te_base}/matches/"
-                 f"?type=all&year={now.year}&month={now.month:02d}&day={now.day:02d}")
+        url = (f"{self.te_base}/matches/"
+               f"?type=all&year={now.year}&month={now.month:02d}&day={now.day:02d}")
         print(f"📥 Scraping tennisexplorer ({today})...")
 
         try:
@@ -127,20 +270,19 @@ class LiveCollectorAgent:
 
         soup = BeautifulSoup(resp.text, 'html.parser')
 
-        matches            = []
+        matches = []
         current_tournament = "Unknown"
-        current_tour       = "ATP"
-        current_surface    = "Hard"
+        current_tour = "ATP"
+        current_surface = "Hard"
 
         rows = soup.select('tbody tr')
 
         i = 0
         while i < len(rows):
-            row        = rows[i]
-            row_id     = row.get('id', '')
-            row_class  = row.get('class', [])
+            row = rows[i]
+            row_id = row.get('id', '')
+            row_class = row.get('class', [])
 
-            # ── Ligne tournoi ─────────────────────────────────────────────────
             if 'head' in row_class and 'flags' in row_class:
                 td = row.select_one('td.t-name')
                 if td:
@@ -174,21 +316,19 @@ class LiveCollectorAgent:
                 i += 1
                 continue
 
-            # ── Ligne player1 ─────────────────────────────────────────────────
             is_p1 = (
-                len(row_id) >= 2 and
-                row_id[0] in ('r', 's') and
-                not row_id.endswith('b') and
-                row_id[1:].isdigit()
+                    len(row_id) >= 2 and
+                    row_id[0] in ('r', 's') and
+                    not row_id.endswith('b') and
+                    row_id[1:].isdigit()
             )
             if not is_p1:
                 i += 1
                 continue
 
-            # ── Ligne player2 ─────────────────────────────────────────────────
             p2_row = None
             if i + 1 < len(rows):
-                nxt    = rows[i + 1]
+                nxt = rows[i + 1]
                 nxt_id = nxt.get('id', '')
                 if nxt_id.endswith('b') and nxt_id[:-1] == row_id:
                     p2_row = nxt
@@ -211,28 +351,16 @@ class LiveCollectorAgent:
                 i += 2
                 continue
 
-            time_td   = row.select_one('td.first.time')
+            time_td = row.select_one('td.first.time')
             time_text = time_td.get_text(separator=' ', strip=True).split()[0] if time_td else ''
 
-            te_odds1, te_odds2 = None, None
-            coursew = row.select_one('td.coursew')
-            course  = row.select_one('td.course')
-            if coursew:
-                try:    te_odds1 = float(coursew.get_text(strip=True))
-                except: pass
-            if course:
-                try:    te_odds2 = float(course.get_text(strip=True))
-                except: pass
-
             matches.append({
-                'player1':       p1,
-                'player2':       p2,
-                'tournament':    current_tournament,
-                'tour':          current_tour,
-                'surface':       current_surface,
+                'player1': p1,
+                'player2': p2,
+                'tournament': current_tournament,
+                'tour': current_tour,
+                'surface': current_surface,
                 'commence_time': f"{today}T{time_text}" if time_text else today,
-                'odds1':         te_odds1,
-                'odds2':         te_odds2,
             })
 
             i += 2
@@ -242,7 +370,8 @@ class LiveCollectorAgent:
 
     # ─── ODDS API ─────────────────────────────────────────────────────────────
 
-    def get_odds(self) -> dict:
+    def get_odds_api(self) -> dict:
+        """Récupère cotes Odds API, retourne {match_key: {odds_api_p1, odds_api_p2}}."""
         print("📥 Récupération des cotes (Odds API)...")
         try:
             resp = requests.get(
@@ -260,46 +389,78 @@ class LiveCollectorAgent:
             for event in data:
                 if not event.get("bookmakers"):
                     continue
-                p1, p2 = event["home_team"], event["away_team"]
-                odds1 = odds2 = None
-                for market in event["bookmakers"][0]["markets"]:
+                p1, p2 = event.get("home_team", "?"), event.get("away_team", "?")
+                odds_p1 = odds_p2 = None
+                for market in event["bookmakers"][0].get("markets", []):
                     if market["key"] == "h2h":
-                        for o in market["outcomes"]:
-                            if o["name"] == p1:   odds1 = o["price"]
-                            elif o["name"] == p2: odds2 = o["price"]
-                odds_map[self._match_key(p1, p2)] = {
-                    'odds1': odds1, 'odds2': odds2,
+                        for o in market.get("outcomes", []):
+                            if o["name"] == p1:
+                                odds_p1 = o["price"]
+                            elif o["name"] == p2:
+                                odds_p2 = o["price"]
+
+                key = make_match_key(p1, p2)
+                odds_map[key] = {
+                    'odds_api_p1': odds_p1, 'odds_api_p2': odds_p2,
                     'p1_odds_name': p1, 'p2_odds_name': p2,
                 }
-            print(f"   {len(odds_map)} matchs avec cotes (Odds API)")
+            print(f"   ✅ {len(odds_map)} matchs Odds API")
             return odds_map
         except Exception as e:
             print(f"⚠️  Odds API indisponible : {e}")
             return {}
 
-    # ─── MERGE ────────────────────────────────────────────────────────────────
+    # ─── COTES (PAS DE NORMALISATION) ─────────────────────────────────────────
 
-    def _normalize_name(self, name: str) -> str:
-        import unicodedata
-        name = unicodedata.normalize('NFD', name)
-        return ''.join(c for c in name if unicodedata.category(c) != 'Mn').lower().strip()
+    def _validate_odds(self, match: dict) -> dict:
+        """Valide les cotes : on garde l'ordre TennisExplorer sans swapper."""
+        odds_p1 = match.get('odds_p1')
+        odds_p2 = match.get('odds_p2')
 
-    def _match_key(self, p1: str, p2: str) -> str:
-        return '_vs_'.join(sorted([self._normalize_name(p1), self._normalize_name(p2)]))
+        if odds_p1 is None or odds_p2 is None:
+            return match
 
-    def _merge_odds(self, matches: list, odds_map: dict) -> list:
-        merged = 0
+        if odds_p1 > 0 and odds_p2 > 0:
+            match['odds_valid'] = True
+        else:
+            match['odds_valid'] = False
+
+        return match
+
+    # ─── FUSION COTES ────────────────────────────────────────────────────────
+
+    def _merge_odds(self, matches: list, oddsportal_map: dict, odds_api_map: dict) -> list:
+        """Fusionne OddsPortal (odds_p1/p2) + Odds API (odds_api_p1/p2) via name_matcher."""
+        merged_op = 0
+        merged_oa = 0
+
         for m in matches:
-            key = self._match_key(m['player1'], m['player2'])
-            if key in odds_map:
-                odds    = odds_map[key]
-                p1_norm = self._normalize_name(m['player1'])
-                if p1_norm in self._normalize_name(odds['p1_odds_name']):
-                    m['odds1'], m['odds2'] = odds['odds1'], odds['odds2']
+            key = make_match_key(m['player1'], m['player2'])
+
+            # OddsPortal (source principale)
+            if key in oddsportal_map:
+                op_data = oddsportal_map[key]
+                m['odds_p1'] = op_data['odds_p1']
+                m['odds_p2'] = op_data['odds_p2']
+                m = self._validate_odds(m)
+                merged_op += 1
+
+            # Odds API (source secondaire)
+            if key in odds_api_map:
+                odds_api = odds_api_map[key]
+                # Détecte le bon sens : compare les noms de famille
+                last1 = extract_last_name(m['player1'])
+                p1_oa_last = extract_last_name(odds_api['p1_odds_name'])
+
+                if last1 == p1_oa_last:
+                    m['odds_api_p1'] = odds_api['odds_api_p1']
+                    m['odds_api_p2'] = odds_api['odds_api_p2']
                 else:
-                    m['odds1'], m['odds2'] = odds['odds2'], odds['odds1']
-                merged += 1
-        print(f"   {merged}/{len(matches)} matchs enrichis avec cotes Odds API")
+                    m['odds_api_p1'] = odds_api['odds_api_p2']
+                    m['odds_api_p2'] = odds_api['odds_api_p1']
+                merged_oa += 1
+
+        print(f"   ✅ {merged_op} matchs OddsPortal enrichis, {merged_oa} Odds API")
         return matches
 
     # ─── SAUVEGARDE ───────────────────────────────────────────────────────────
@@ -309,8 +470,8 @@ class LiveCollectorAgent:
             print("⚠️  Aucun match à sauvegarder")
             return
 
-        conn  = get_connection()
-        c     = conn.cursor()
+        conn = get_connection()
+        c = conn.cursor()
         today = datetime.now().strftime("%Y-%m-%d")
         saved = 0
 
@@ -336,12 +497,24 @@ class LiveCollectorAgent:
                 """, (today, m['player1'], m['player2'],
                       m['tournament'], surface))
 
-                if m.get('odds1') or m.get('odds2'):
+                # Update cotes OddsPortal
+                if m.get('odds_p1') or m.get('odds_p2'):
                     try:
                         c.execute("""
                             UPDATE predictions SET odds_p1=?, odds_p2=?
                             WHERE date=? AND player1=? AND player2=?
-                        """, (m.get('odds1'), m.get('odds2'),
+                        """, (m.get('odds_p1'), m.get('odds_p2'),
+                              today, m['player1'], m['player2']))
+                    except Exception:
+                        pass
+
+                # Update cotes Odds API
+                if m.get('odds_api_p1') or m.get('odds_api_p2'):
+                    try:
+                        c.execute("""
+                            UPDATE predictions SET odds_api_p1=?, odds_api_p2=?
+                            WHERE date=? AND player1=? AND player2=?
+                        """, (m.get('odds_api_p1'), m.get('odds_api_p2'),
                               today, m['player1'], m['player2']))
                     except Exception:
                         pass
@@ -353,8 +526,9 @@ class LiveCollectorAgent:
 
         conn.commit()
         conn.close()
-        with_odds = sum(1 for m in matches if m.get('odds1'))
-        print(f"✅ {saved} matchs sauvegardés ({with_odds} avec cotes)")
+        with_odds = sum(1 for m in matches if m.get('odds_p1'))
+        with_api = sum(1 for m in matches if m.get('odds_api_p1'))
+        print(f"✅ {saved} matchs sauvegardés ({with_odds} OddsPortal, {with_api} Odds API)")
 
     # ─── MAIN ─────────────────────────────────────────────────────────────────
 
@@ -362,36 +536,38 @@ class LiveCollectorAgent:
         # 1. Scraping tennisexplorer
         matches = self.get_todays_matches_te()
 
-        # 2. Résolution des noms abrégés → noms complets via players_rankings
+        # 2. Résolution des noms
         if matches:
             matches = self._resolve_match_names(matches)
 
-        # 3. Cotes Odds API
-        odds_map = self.get_odds()
-        if odds_map and matches:
-            matches = self._merge_odds(matches, odds_map)
+        # 3. Déduplication
+        if matches:
+            matches = self._deduplicate_matches(matches)
 
-        # 4. Sauvegarde
+        # 4. Scraper OddsPortal (async)
+        oddsportal_map = asyncio.run(self.oddsportal_scraper.run())
+
+        # 5. Cotes Odds API
+        odds_api_map = self.get_odds_api()
+
+        # 6. Fusion cotes
+        if matches:
+            matches = self._merge_odds(matches, oddsportal_map, odds_api_map)
+
+        # 7. Sauvegarde
         self.save_todays_matches(matches)
         return matches
 
 
 if __name__ == "__main__":
-    agent   = LiveCollectorAgent()
+    agent = LiveCollectorAgent()
     matches = agent.run()
 
-    print(f"\n{'='*80}")
-    print(f"{'Joueur 1':<30} {'Joueur 2':<30} {'Cotes':^12} {'Surface':<8} Tour")
-    print(f"{'='*80}")
+    print(f"\n{'=' * 120}")
+    print(f"{'Joueur 1':<25} {'Joueur 2':<25} {'OddsPortal':^25} {'Odds API':^25}")
+    print(f"{'=' * 120}")
     for m in matches:
-        cotes = f"{m['odds1']}/{m['odds2']}" if m.get('odds1') else "—"
-        p1 = m['player1']
-        p2 = m['player2']
-        # Affiche l'abrégé original si résolution a eu lieu
-        if 'player1_abbr' in m:
-            p1 = f"{p1} ({m['player1_abbr']})"
-        if 'player2_abbr' in m:
-            p2 = f"{p2} ({m['player2_abbr']})"
-        print(f"{p1:<30} {p2:<30} {cotes:^12} "
-              f"{m.get('surface','?'):<8} {m.get('tour','?')}")
+        op = f"{m.get('odds_p1', '-'):.2f}/{m.get('odds_p2', '-'):.2f}" if m.get('odds_p1') else "—"
+        oa = f"{m.get('odds_api_p1', '-'):.2f}/{m.get('odds_api_p2', '-'):.2f}" if m.get('odds_api_p1') else "—"
+        print(f"{m['player1']:<25} {m['player2']:<25} {op:^25} {oa:^25}")
     print(f"\nTotal : {len(matches)} matchs")

@@ -71,6 +71,7 @@ def init_db():
             h2h_p1_wins INTEGER, h2h_p2_wins INTEGER,
             actual_winner TEXT, correct INTEGER,
             odds_p1 REAL, odds_p2 REAL,
+            odds_api_p1 REAL, odds_api_p2 REAL,
             sent_in_email INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
@@ -122,7 +123,7 @@ def init_db():
 
 
 def _run_migrations(c):
-    """Ajoute les colonnes manquantes sur les DB existantes."""
+    """Ajoute les colonnes et index manquants sur les DB existantes."""
     new_columns = [
         # matches
         ("matches", "tourney_level", "TEXT"),
@@ -171,12 +172,24 @@ def _run_migrations(c):
         ("predictions", "odds_p2", "REAL"),
         ("predictions", "tournament", "TEXT"),
         ("predictions", "sent_in_email", "INTEGER DEFAULT 0"),
+        ("predictions", "odds_api_p1", "REAL"),
+        ("predictions", "odds_api_p2", "REAL"),
     ]
     for table, col, col_type in new_columns:
         try:
             c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass  # colonne déjà existante
+
+    # Index unique sur predictions — empêche les doublons exacts
+    # (date, player1, player2) : un seul sens par match par jour
+    try:
+        c.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_predictions_unique
+            ON predictions(date, player1, player2)
+        """)
+    except sqlite3.OperationalError:
+        pass  # index déjà existant
 
 
 def get_connection():

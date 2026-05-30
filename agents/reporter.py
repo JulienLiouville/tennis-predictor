@@ -18,7 +18,8 @@ class ReporterAgent:
     def get_todays_predictions(self) -> list:
         """
         Récupère le top 10 prédictions du jour >= 65% confiance
-        et les marque sent_in_email = 1.
+        avec cotes OddsPortal et Odds API.
+        Marque sent_in_email = 1.
         """
         conn = get_connection()
         c = conn.cursor()
@@ -26,7 +27,7 @@ class ReporterAgent:
 
         c.execute("""
             SELECT id, player1, player2, predicted_winner,
-                   confidence, surface
+                   confidence, surface, odds_p1, odds_p2, odds_api_p1, odds_api_p2
             FROM predictions
             WHERE date = ? AND confidence >= 0.65
             ORDER BY confidence DESC
@@ -44,13 +45,12 @@ class ReporterAgent:
             conn.commit()
 
         conn.close()
-        # Retourne sans la colonne id
-        return [(r[1], r[2], r[3], r[4], r[5]) for r in rows]
+        # Retourne sans l'id
+        return [(r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9]) for r in rows]
 
     def get_yesterday_results(self) -> list:
         """
-        Récupère les résultats des prédictions envoyées hier (sent_in_email = 1)
-        après réconciliation.
+        Récupère les résultats des prédictions envoyées hier (sent_in_email = 1).
         """
         conn = get_connection()
         c = conn.cursor()
@@ -88,6 +88,28 @@ class ReporterAgent:
             }
         return {'success_rate': 0, 'total_predictions': 0}
 
+    def _get_winner_odds_oddsportal(self, player1, player2, predicted_winner, odds_p1, odds_p2):
+        """Retourne la cote OddsPortal du vainqueur prédit."""
+        if odds_p1 is None or odds_p2 is None:
+            return "—"
+        if predicted_winner == player1:
+            return f"{odds_p1:.2f}"
+        elif predicted_winner == player2:
+            return f"{odds_p2:.2f}"
+        else:
+            return "—"
+
+    def _get_winner_odds_oddsapi(self, player1, player2, predicted_winner, odds_api_p1, odds_api_p2):
+        """Retourne la cote Odds API du vainqueur prédit."""
+        if odds_api_p1 is None or odds_api_p2 is None:
+            return "—"
+        if predicted_winner == player1:
+            return f"{odds_api_p1:.2f}"
+        elif predicted_winner == player2:
+            return f"{odds_api_p2:.2f}"
+        else:
+            return "—"
+
     def build_email(self, predictions: list,
                     yesterday: list, perf: dict) -> str:
         """Construit le contenu HTML du mail"""
@@ -96,16 +118,20 @@ class ReporterAgent:
         pred_html = ""
         if predictions:
             for p in predictions:
-                player1, player2, winner, conf, surface = p
+                player1, player2, winner, conf, surface, op1, op2, oa1, oa2 = p
+                odds_op = self._get_winner_odds_oddsportal(player1, player2, winner, op1, op2)
+                odds_oa = self._get_winner_odds_oddsapi(player1, player2, winner, oa1, oa2)
                 pred_html += f"""
                 <tr>
                     <td>🎾 {player1} vs {player2}</td>
                     <td><b>{winner}</b></td>
                     <td>{surface}</td>
                     <td><b>{conf:.0%}</b></td>
+                    <td><small>{odds_op}</small></td>
+                    <td><small>{odds_oa}</small></td>
                 </tr>"""
         else:
-            pred_html = "<tr><td colspan='4'>Aucune prédiction ≥ 65% aujourd'hui</td></tr>"
+            pred_html = "<tr><td colspan='6'>Aucune prédiction ≥ 65% aujourd'hui</td></tr>"
 
         # Section résultats hier
         results_html = ""
@@ -126,7 +152,7 @@ class ReporterAgent:
             results_html = "<p>Pas de résultats à afficher pour hier</p>"
 
         html = f"""
-        <html><body style="font-family: Arial; max-width: 600px; margin: auto;">
+        <html><body style="font-family: Arial; max-width: 800px; margin: auto;">
             <h1>🎾 Tennis Predictor - {datetime.now().strftime('%d/%m/%Y')}</h1>
 
             <h2>📊 Performance globale de l'algo</h2>
@@ -140,9 +166,14 @@ class ReporterAgent:
                     <th>Vainqueur prédit</th>
                     <th>Surface</th>
                     <th>Confiance</th>
+                    <th>Cote OP</th>
+                    <th>Cote OA</th>
                 </tr>
                 {pred_html}
             </table>
+            <p style="font-size:12px; color:#666;">
+            <b>Cote OP</b> = Cote OddsPortal du vainqueur prédit | <b>Cote OA</b> = Cote Odds API du vainqueur prédit
+            </p>
 
             <h2>📈 Résultats des prédictions d'hier</h2>
             {results_html}
